@@ -31,6 +31,76 @@ static RE_NEXTWEEK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^下周\s*([
 static RE_MONTHEND: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^月底\s*").unwrap());
 // 15号 交房租(本月该日,已过则下月)
 static RE_BAREDAY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d{1,2})\s*[日号]\s*").unwrap());
+// 中文数字时刻:「晚上八点」→「晚上8点」(仅转换 点/时 前的中文数字,日期数字不动)
+static RE_CN_TIME_NUM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([一二两三四五六七八九十]{1,3})([点时])").unwrap());
+
+/// 中文数字串 → 阿拉伯数字(一~十、十X、X十、X十X;两=2)
+fn cn_num_to_int(s: &str) -> Option<u32> {
+    let d = |c: char| match c {
+        '一' => 1, '两' => 2, '二' => 2, '三' => 3, '四' => 4,
+        '五' => 5, '六' => 6, '七' => 7, '八' => 8, '九' => 9, _ => 0,
+    };
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() || chars.len() > 3 {
+        return None;
+    }
+    if chars.iter().all(|&c| c == '十') && chars.len() > 1 {
+        return None;
+    }
+    match chars.iter().position(|&c| c == '十') {
+        None => {
+            if chars.len() == 1 {
+                let v = d(chars[0]);
+                (v > 0).then_some(v)
+            } else {
+                None
+            }
+        }
+        Some(0) => {
+            let rest: Vec<u32> = chars[1..].iter().map(|&c| d(c)).collect();
+            if rest.is_empty() {
+                Some(10)
+            } else if rest.len() == 1 && rest[0] > 0 {
+                Some(10 + rest[0])
+            } else {
+                None
+            }
+        }
+        Some(i) => {
+            let a = d(chars[0]);
+            if a == 0 {
+                return None;
+            }
+            let rest: Vec<u32> = chars[i + 1..].iter().map(|&c| d(c)).collect();
+            if rest.is_empty() {
+                Some(a * 10)
+            } else if rest.len() == 1 && rest[0] > 0 {
+                Some(a * 10 + rest[0])
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// 时间表达归一化:中文数字时刻 + 常用别名(明早/明晚/今晚/今早…)
+fn normalize_time_aliases(s: &str) -> String {
+    let with_num = RE_CN_TIME_NUM.replace_all(s, |c: &regex::Captures| {
+        // regex crate 不支持前瞻:用捕获组保留 点/时 字符
+        match cn_num_to_int(&c[1]) {
+            Some(v) => format!("{v}{}", &c[2]),
+            None => c[0].to_string(),
+        }
+    });
+    with_num
+        .replace("明早", "明天早上")
+        .replace("明晚", "明天晚上")
+        .replace("明午", "明天中午")
+        .replace("今早", "今天早上")
+        .replace("今晚", "今天晚上")
+        .replace("今午", "今天中午")
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedWhen {
@@ -266,11 +336,11 @@ fn bare_day_date(now: NaiveDateTime, d: u32) -> Option<NaiveDate> {
 
 /// 解析提醒时间表达;now 由调用方传入(便于测试)
 pub fn parse_when(text: &str, now: NaiveDateTime) -> Option<ParsedWhen> {
-    let original = text.trim();
+    let original = normalize_time_aliases(text.trim());
     if original.is_empty() {
         return None;
     }
-    let mut rest = original;
+    let mut rest = original.as_str();
     let mut base_date: Option<NaiveDate> = None;
     let mut recur: Option<String> = None;
 
@@ -553,5 +623,39 @@ mod fuzzy_tests {
         assert!(fuzzy_time_prefix("明天晚上8点开会").is_none());
         // 纯事项(无日期前缀)→ 不属于本层
         assert!(fuzzy_time_prefix("喝水").is_none());
+    }
+}
+
+#[cfg(test)]
+mod cn_num_tests {
+    use super::{cn_num_to_int, normalize_time_aliases, parse_when};
+
+    #[test]
+    fn cn_num_cases() {
+        assert_eq!(cn_num_to_int("八"), Some(8));
+        assert_eq!(cn_num_to_int("两"), Some(2));
+        assert_eq!(cn_num_to_int("十"), Some(10));
+        assert_eq!(cn_num_to_int("十一"), Some(11));
+        assert_eq!(cn_num_to_int("二十"), Some(20));
+        assert_eq!(cn_num_to_int("二十三"), Some(23));
+        assert_eq!(cn_num_to_int("十十"), None);
+    }
+
+    #[test]
+    fn normalize_aliases_and_cn_clock() {
+        assert_eq!(normalize_time_aliases("明早八点叫我起床"), "明天早上8点叫我起床");
+        assert_eq!(normalize_time_aliases("今晚十点"), "今天晚上10点");
+        assert_eq!(normalize_time_aliases("晚上八点半跑步"), "晚上8点半跑步");
+    }
+
+    #[test]
+    fn parse_when_cn_and_alias() {
+        let b = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let p = parse_when("晚上八点跑步", b).unwrap();
+        assert_eq!(p.when.format("%H").to_string(), "20");
+        assert_eq!(p.rest, "跑步");
+        let p2 = parse_when("明早八点叫我起床", b).unwrap();
+        assert_eq!(p2.when.format("%m-%d %H").to_string(), "11-15 08");
+        assert_eq!(p2.rest, "叫我起床");
     }
 }

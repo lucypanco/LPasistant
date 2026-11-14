@@ -11,8 +11,8 @@ import sys
 DISTRO = "Ubuntu"
 SYNC = "mkdir -p ~/qqbot && rm -rf ~/qqbot/core && cp -r /mnt/c/qq-bot/mobile/core ~/qqbot/core"
 TEST = (
-    "set -o pipefail; cd ~/qqbot/core && cargo test 2>&1 | tail -c 3000 && "
-    "cargo build -q 2>&1 | tail -c 500 && "
+    "set -o pipefail; cd ~/qqbot/core && cargo test --offline 2>&1 | tail -c 3000 && "
+    "cargo build -q --offline 2>&1 | tail -c 500 && "
     "cargo run -q --bin uniffi-bindgen -- generate "
     "--library target/debug/liblpasistant_core.so --language kotlin "
     "--out-dir /mnt/c/qq-bot/mobile/app/src/main/java 2>&1 | tail -c 500 && "

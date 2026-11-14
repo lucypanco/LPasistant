@@ -491,9 +491,8 @@ pub fn try_wide(core: &Assistant, utterance: &str, now: NaiveDateTime) -> Option
     if !core.llm_enabled() || !wide_enabled(core) {
         return None;
     }
-    if looks_like_question(utterance) {
-        return None; // 宽模式:疑问句不拦(路由器自行判断),但天气/时间类由规则已处理
-    }
+    // 宽模式不拦疑问句:路由器自行判断(如「明天北京天气怎么样」应路由 weather);
+    // reminder 路由仍有 parse_when+verifier+确认闸兜底,误入的疑问句会被校验拒掉。
     if !core.llm_ready() {
         return Some(
             "🧩 AI兜底(宽模式)已开启,但本地模型未就绪(可在「设置」页查看)。".to_string(),
@@ -598,4 +597,41 @@ pub(crate) fn wide_enabled(core: &Assistant) -> bool {
             .ok()
             .map(|s| s.kv_get("llm_mode").as_deref() == Some("wide"))
             .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod wide_tests {
+    use crate::api::{Assistant, LlmInfer};
+
+    /// 模拟模型:校验器问「是」;路由/解析一律返回合法 reminder JSON
+    struct MockLlm;
+    impl LlmInfer for MockLlm {
+        fn infer(&self, prompt: String) -> String {
+            if prompt.contains("校验器") {
+                return "是".to_string();
+            }
+            r#"{"route":"reminder","text":"交周报","when":"周五18点"}"#.to_string()
+        }
+    }
+
+    /// 全链路(模拟模型):开兜底+宽模式 → 规则未命中句 → 路由 → 草稿确认
+    #[test]
+    fn wide_routes_reminder_and_confirms() {
+        let db = std::env::temp_dir().join(format!("lp_wide_{}.db", uuid::Uuid::new_v4()));
+        let core = Assistant::new(db.to_str().unwrap().to_string()).unwrap();
+        core.set_setting("llm_enabled".to_string(), "1".to_string()).unwrap();
+        core.set_setting("llm_mode".to_string(), "wide".to_string()).unwrap();
+        core.attach_llm(Box::new(MockLlm));
+
+        // 疑问句不再被宽模式拦截(路由器自行判断)
+        let r1 = crate::intent::dispatch(&core, "帮我安排一下交周报的事?");
+        assert!(r1.contains("确认"), "疑问句也应路由进提醒草稿: {r1}");
+
+        let r2 = crate::intent::dispatch(&core, "确认");
+        assert!(r2.contains("已设置"), "确认后落库: {r2}");
+        let list = core.list_reminders().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].text, "交周报");
+        let _ = std::fs::remove_file(&db);
+    }
 }

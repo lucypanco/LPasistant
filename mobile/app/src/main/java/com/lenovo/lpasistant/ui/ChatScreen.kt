@@ -53,7 +53,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -100,6 +102,8 @@ private val QUICK_CHIPS = listOf(
 fun ChatScreen(onOpenSettings: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val msgs = remember { mutableStateListOf(ChatMsg(nextMsgId(), false, WELCOME)) }
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -219,11 +223,17 @@ fun ChatScreen(onOpenSettings: () -> Unit) {
             }
         }
         HorizontalDivider()
+        // 点消息区(空白处)收起键盘:输入框回落,再点输入框唤起
+        val listPress = rememberPress()
         LazyColumn(
             state = listState,
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .clickable(interactionSource = listPress, indication = null) {
+                    keyboard?.hide()
+                    focusManager.clearFocus()
+                },
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {

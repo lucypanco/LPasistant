@@ -1,6 +1,7 @@
 package com.lenovo.lpasistant.core
 
 import android.content.Context
+import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import uniffi.lpasistant_core.LlmInfer
 import java.io.File
@@ -14,21 +15,33 @@ import java.io.File
  *
  * 职责边界:模型只把句子"翻译"成受限 JSON 字段;字段校验、日期计算、
  * 二步确认、落库全部在 Rust 侧本地代码完成。
+ * 诊断:全链路打 Logcat(tag=LlmController),便于真机排查模型加载/输出。
  */
 class LlmInferImpl(private val ctx: Context) : LlmInfer {
 
     override fun infer(prompt: String): String = try {
+        Log.i(TAG, "infer 收到prompt: ${prompt.take(150)}")
         if (LlmController.ensureEngine(ctx)) {
-            LlmController.inferLocal(prompt) ?: ""
+            val out = LlmController.inferLocal(prompt)
+            Log.i(TAG, "infer 返回: ${out?.take(300) ?: "(null)"}")
+            out ?: ""
         } else {
+            Log.w(TAG, "engine 未就绪,返回空串")
             ""
         }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.e(TAG, "infer 异常", e)
         ""
+    }
+
+    companion object {
+        const val TAG = "LlmController"
     }
 }
 
 object LlmController {
+
+    private const val TAG = "LlmController"
 
     @Volatile
     private var engine: LlmInference? = null
@@ -60,15 +73,18 @@ object LlmController {
                 .setMaxTokens(128)
                 .build()
             engine = LlmInference.createFromOptions(ctx, opts)
+            Log.i(TAG, "engine 创建成功: ${f.length() / 1024 / 1024}MB")
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "engine 创建失败: ${e.javaClass.simpleName}: ${e.message}", e)
             false
         }
     }
 
     fun inferLocal(prompt: String): String? = try {
         engine?.generateResponse(prompt)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.e(TAG, "generateResponse 异常: ${e.javaClass.simpleName}: ${e.message}", e)
         null
     }
 }
