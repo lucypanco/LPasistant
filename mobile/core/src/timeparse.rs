@@ -41,6 +41,56 @@ pub struct ParsedWhen {
     pub rest: String,
 }
 
+/// 模糊时间插槽(确定性,零模型):「晚上有学校活动」→ Some(("晚上", "学校活动"))。
+/// 规则:开头命中日期/时段/循环前缀,但剩余部分没有具体时刻(数字/点/时/半/十)
+/// 也没有再叠一层日期词(如「明天晚上8点」应整体交给 parse_when)→ 属于缺时刻,追问。
+/// 时刻齐全返回 None。事项里剥离「有/的」连接词。
+pub fn fuzzy_time_prefix(s: &str) -> Option<(&str, &str)> {
+    static PREFIX_RES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+        vec![
+            LazyLock::force(&RE_MONTHLY).clone(),
+            LazyLock::force(&RE_DATE).clone(),
+            LazyLock::force(&RE_BAREDAY).clone(),
+            LazyLock::force(&RE_DAILY).clone(),
+            LazyLock::force(&RE_WEEKLY).clone(),
+            LazyLock::force(&RE_BAREWEEK).clone(),
+            LazyLock::force(&RE_NEXTWEEK).clone(),
+            LazyLock::force(&RE_DAYOFFSET).clone(),
+            LazyLock::force(&RE_MONTHEND).clone(),
+            LazyLock::force(&RE_PERIOD).clone(),
+        ]
+    });
+    const DATEISH_STARTS: [&str; 22] = [
+        "凌晨", "清晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里", "深夜",
+        "今天", "明天", "后天", "大后天", "每天", "每日", "每周", "下周", "每月", "月底", "周", "早",
+    ];
+    let t = s.trim();
+    for re in PREFIX_RES.iter() {
+        if let Some(m) = re.find(t) {
+            if m.start() != 0 {
+                continue;
+            }
+            let rest = t[m.end()..].trim();
+            if rest.is_empty() {
+                return Some((m.as_str(), ""));
+            }
+            let clockish = rest.starts_with(|c: char| c.is_ascii_digit())
+                || ["点", "时", "半", "十"].iter().any(|w| rest.starts_with(w))
+                || DATEISH_STARTS.iter().any(|w| rest.starts_with(w));
+            if clockish {
+                return None;
+            }
+            let event = rest
+                .trim_start_matches(|c: char| c.is_whitespace() || c == ',' || c == '，')
+                .trim_start_matches('有')
+                .trim_start_matches('的')
+                .trim();
+            return Some((m.as_str(), event));
+        }
+    }
+    None
+}
+
 pub fn weekday_cn(dt: &NaiveDateTime) -> &'static str {
     WEEK_CN[dt.weekday().num_days_from_monday() as usize]
 }
@@ -483,5 +533,25 @@ mod tests {
     #[test]
     fn human_readable() {
         assert_eq!(human_dt(&ndt(2026, 11, 4, 8, 5)), "11月04日(周三) 08:05");
+    }
+}
+
+#[cfg(test)]
+mod fuzzy_tests {
+    use super::fuzzy_time_prefix;
+
+    #[test]
+    fn fuzzy_prefix_cases() {
+        assert_eq!(fuzzy_time_prefix("晚上有学校活动").unwrap(), ("晚上", "学校活动"));
+        assert_eq!(fuzzy_time_prefix("明天有聚会").unwrap(), ("明天", "聚会"));
+        assert_eq!(fuzzy_time_prefix("每天喝水").unwrap(), ("每天", "喝水"));
+        assert_eq!(fuzzy_time_prefix("每周五交周报").unwrap(), ("每周五", "交周报"));
+        assert_eq!(fuzzy_time_prefix("15号交房租").unwrap(), ("15号", "交房租"));
+        assert_eq!(fuzzy_time_prefix("晚上").unwrap(), ("晚上", ""));
+        // 有时刻 → 不模糊
+        assert!(fuzzy_time_prefix("晚上8点有学校活动").is_none());
+        assert!(fuzzy_time_prefix("明天晚上8点开会").is_none());
+        // 纯事项(无日期前缀)→ 不属于本层
+        assert!(fuzzy_time_prefix("喝水").is_none());
     }
 }

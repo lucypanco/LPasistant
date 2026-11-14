@@ -302,13 +302,31 @@ fn add_reminder(core: &Assistant, body: &str) -> String {
     }
     let now = Local::now().naive_local();
     let Some(parsed) = parse_when(body, now) else {
+        // 确定性插槽填充(零模型,离线可用):日期/时段前缀齐但缺时刻 → 追问
+        if let Some((pfx, event)) = crate::timeparse::fuzzy_time_prefix(body) {
+            if event.is_empty() {
+                return format!("⏳ {pfx}想提醒你什么?回复如「{pfx}8点 学校活动」");
+            }
+            if !crate::llm::looks_like_question(event) {
+                crate::llm::store_clarify_reminder(core, event);
+                return format!(
+                    "⏳ 好,{pfx}提醒你「{event}」。\n具体几点?直接回复如「晚上7点」;回复「取消」放弃"
+                );
+            }
+        }
         // 规则没看懂 → 可选的本地 LLM 兜底(未开启/未就绪时返回 USAGE)
         return crate::llm::fallback(core, body, now);
     };
+    // 事项剥离「有/的」连接词:「晚上8点有学校活动」→ 事项「学校活动」
     let text = if parsed.rest.trim().is_empty() {
         "到时间啦"
     } else {
-        parsed.rest.trim()
+        parsed
+            .rest
+            .trim()
+            .trim_start_matches('有')
+            .trim_start_matches('的')
+            .trim()
     };
     let mut store = match core.store.lock() {
         Ok(s) => s,
@@ -357,3 +375,35 @@ fn subscribe_digest(core: &Assistant, raw: Option<&str>) -> String {
 // 保证 CoreError2 在本模块可见(供 store 转换)
 #[allow(dead_code)]
 fn _touch(_e: CoreError2) {}
+
+#[cfg(test)]
+mod flow_tests {
+    use crate::api::Assistant;
+
+    /// 全链路:模糊时段 → 确定性追问(零模型)→ 补时间 → 草稿确认 → 落库
+    #[test]
+    fn fuzzy_reminder_clarifies_then_confirms() {
+        let db = std::env::temp_dir().join(format!("lp_intent_{}.db", uuid::Uuid::new_v4()));
+        let core = Assistant::new(db.to_str().unwrap().to_string()).unwrap();
+
+        let r1 = crate::intent::dispatch(&core, "提醒我晚上有学校活动");
+        assert!(r1.contains("学校活动") && r1.contains("几点"), "应确定性追问时间: {r1}");
+
+        let r2 = crate::intent::dispatch(&core, "晚上7点");
+        assert!(r2.contains("确认"), "补时间后应进入草稿待确认: {r2}");
+
+        let r3 = crate::intent::dispatch(&core, "确认");
+        assert!(r3.contains("已设置"), "确认后应落库: {r3}");
+        let list = core.list_reminders().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].text, "学校活动");
+
+        // 时刻齐全的直接落库,事项剥离「有」连接词
+        let r4 = crate::intent::dispatch(&core, "提醒我晚上8点有学校活动");
+        assert!(r4.contains("已设置"), "应直接设置: {r4}");
+        let list = core.list_reminders().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].text, "学校活动");
+        let _ = std::fs::remove_file(&db);
+    }
+}

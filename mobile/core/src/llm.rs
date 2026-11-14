@@ -56,6 +56,7 @@ pub fn build_prompt(utterance: &str) -> String {
 rel 用于\"N个单位后\"。\n\
 只有当这句话明确要求\"在未来某个时间做某事\"时才输出非none;提问、聊天、查询一律输出 {{\"kind\":\"none\"}}。\n\
 如果明确是要设提醒、但缺少具体时间(如「晚上」「吃完饭后」这种模糊时间),输出 ask,question 用一句自然的话追问具体时间。\n\
+示例:「晚上有学校活动」→ {{\"kind\":\"ask\",\"question\":\"晚上几点提醒你「学校活动」?\"}}\n\
 反例:「提醒我一下你是谁」→ {{\"kind\":\"none\"}}\n\
 反例:「提醒我 明天天气怎么样」→ {{\"kind\":\"none\"}}\n\
 用户:{utterance}\nJSON:"
@@ -446,7 +447,7 @@ fn draft_reply(core: &Assistant, draft: PendingReminder) -> String {
     )
 }
 
-fn store_clarify_reminder(core: &Assistant, utterance: &str) {
+pub(crate) fn store_clarify_reminder(core: &Assistant, utterance: &str) {
     if let Ok(mut g) = core.clarify.lock() {
         *g = Some(ClarifyState {
             route: "reminder".to_string(),
