@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,6 +62,13 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                // 系统返回键/手势:次级页回到上一级,而不是退出 App
+                BackHandler(enabled = screen != "chat") {
+                    screen = when (screen) {
+                        "reminders", "help" -> "settings"
+                        else -> "chat"
+                    }
+                }
                 // safeDrawing 避让:状态栏/导航条/键盘(边到边模式下窗口不再自动缩放)
                 Column(
                     Modifier

@@ -132,61 +132,91 @@ pub fn cn_city(core: &Assistant, code: &str, name: &str) -> Result<String, CoreE
     }
     let dz: Value = serde_json::from_str(city_json).map_err(|e| err(format!("实况解析失败:{e}")))?;
     let info = &dz["weatherinfo"];
+    let weather = info["weather"].as_str().unwrap_or("").trim().to_string();
+    let wd = info["wd"].as_str().unwrap_or("").trim().to_string();
+    let ws = info["ws"].as_str().unwrap_or("").trim().to_string();
+    let temp_raw = info["temp"].as_str().unwrap_or("").trim().to_string();
+    let tempn_raw = info["tempn"].as_str().unwrap_or("").trim().to_string();
+    let temp_v: Option<f64> = if temp_raw != "999" && !temp_raw.is_empty() {
+        temp_raw.parse().ok()
+    } else {
+        None
+    };
+    let tonight = if !tempn_raw.is_empty() && tempn_raw != "999" {
+        Some(format!("今夜最低{tempn_raw}°C"))
+    } else {
+        None
+    };
 
-    let mut lines = vec![format!("🌤 {name} 实况(中国天气网·城市站)")];
-    let weather = info["weather"].as_str().unwrap_or("");
-    let wd = info["wd"].as_str().unwrap_or("");
-    let ws = info["ws"].as_str().unwrap_or("");
-    let mut now_line = String::new();
+    // 现在的描述:天气 + 气温 + 风向风力(ws 数字则补「级」)
+    let mut now_desc = String::new();
     if !weather.is_empty() {
-        now_line.push_str(weather);
+        now_desc.push_str(&weather);
+    }
+    if let Some(t) = temp_v {
+        now_desc.push_str(&format!("{:.0}°C", t));
     }
     if !wd.is_empty() {
-        now_line.push_str(&format!(",{wd}"));
-        if !ws.is_empty() {
-            now_line.push_str(&format!(" {ws}"));
+        match ws.parse::<f64>() {
+            Ok(v) => now_desc.push_str(&format!(",{wd}风{v:.0}级")),
+            _ => {
+                if !ws.is_empty() {
+                    now_desc.push_str(&format!(",{wd}风{ws}"))
+                }
+            }
         }
     }
-    if let Some(t) = info["temp"].as_str() {
-        if t != "999" && !t.is_empty() {
-            now_line.push_str(&format!(",当前 {t}°C"));
+    let mut now_desc_opt = if now_desc.is_empty() { None } else { Some(now_desc) };
+
+    // 湿度 + 未来24小时:城市名→坐标→MET/GFS集合(并行;失败则省略对应句)
+    let mut humidity = None;
+    let mut f24 = None;
+    if let Ok(g) = geocode(core, name) {
+        let (met_res, ens_res) = std::thread::scope(|s| {
+            let a = s.spawn(|| met_now(core, g.lat, g.lon).ok());
+            let b = s.spawn(|| ensemble_24h(core, g.lat, g.lon).ok());
+            (a.join().unwrap_or(None), b.join().unwrap_or(None))
+        });
+        // 实况温度缺失时用 MET 温度补
+        if let Some(m) = &met_res {
+            if temp_v.is_none() {
+                if let Some(d) = now_desc_opt.as_mut() {
+                    *d = format!("{d},{:.0}°C", m.temp);
+                }
+            }
+            humidity = Some(m.humidity as u32);
         }
-    }
-    lines.push(now_line);
-    if let Some(tn) = info["tempn"].as_str() {
-        if !tn.is_empty() && tn != "999" {
-            lines.push(format!("今夜低温 {tn}°C"));
-        }
+        f24 = ens_res;
     }
 
     // 官方预警(气象台发布,站点级权威信息)
+    let mut warns: Vec<String> = Vec::new();
     if let Ok(alarm) = serde_json::from_str::<Value>(alarm_json) {
         if let Some(list) = alarm["w"].as_array() {
-            let warns: Vec<String> = list
-                .iter()
-                .filter_map(|w| {
-                    let area = w["w1"].as_str()?.trim();
-                    let kind = w["w5"].as_str()?.trim();
-                    let level = w["w7"].as_str()?.trim();
-                    let time = w["w8"].as_str().unwrap_or("");
-                    if kind.is_empty() {
-                        return None;
-                    }
-                    let short_time = if time.len() >= 16 { &time[..16] } else { time };
-                    Some(format!("⚠️ {area}·{kind}({level}) {short_time}发布"))
-                })
-                .collect();
-            if !warns.is_empty() {
-                lines.push(String::new());
-                lines.extend(warns);
+            for w in list {
+                let Some(area) = w["w1"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let Some(kind) = w["w5"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let level = w["w7"].as_str().unwrap_or("").trim();
+                let time = w["w8"].as_str().unwrap_or("");
+                let short_time = if time.len() >= 16 { &time[..16] } else { time };
+                warns.push(format!("⚠️ {area}·{kind}({level}) {short_time}发布"));
             }
         }
-    } else {
-        lines.push("无生效官方预警".to_string());
     }
-    lines.push(String::new());
-    lines.push("—— 数据:中国天气网(中央气象台),按城市站点发布".to_string());
-    Ok(lines.join("\n"))
+
+    Ok(broadcast_text(
+        name,
+        now_desc_opt.as_deref(),
+        humidity,
+        tonight.as_deref(),
+        f24,
+        &warns,
+        "数据:中国天气网(中央气象台)·挪威气象局·GFS集合预报",
+    ))
 }
 
 // ---------------- MET 挪威(定位实况,独立机构) ----------------
@@ -227,18 +257,29 @@ pub fn met_now(core: &Assistant, lat: f64, lon: f64) -> Result<MetNow, CoreError
     Ok(out)
 }
 
-// ---------------- GFS 集合预报(30成员分歧度) ----------------
+// ---------------- GFS 集合预报(未来24小时) ----------------
 
-#[derive(Debug, Default)]
-pub struct EnsembleStats {
-    pub members: usize,
-    pub median: f64,
-    pub min: f64,
-    pub max: f64,
+/// 未来24小时变化(集合预报):最高/最低、前后半程中位温差(趋势)、降水成员占比
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Forecast24 {
+    pub hi: f64,
+    pub lo: f64,
+    /// 后半程中位温度 - 前半程中位温度(正=升温)
+    pub trend: f64,
     pub precip_frac: f64,
 }
 
-pub fn ensemble_stats(core: &Assistant, lat: f64, lon: f64) -> Result<EnsembleStats, CoreError> {
+fn median_of(mut v: Vec<f64>) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    }
+}
+
+pub fn ensemble_24h(core: &Assistant, lat: f64, lon: f64) -> Result<Forecast24, CoreError> {
     let resp = core
         .http
         .get(ENS_URL)
@@ -248,7 +289,7 @@ pub fn ensemble_stats(core: &Assistant, lat: f64, lon: f64) -> Result<EnsembleSt
             ("longitude", lon.to_string()),
             ("hourly", "temperature_2m,precipitation".to_string()),
             ("models", "gfs_seamless".to_string()),
-            ("forecast_hours", "1".to_string()),
+            ("forecast_hours", "24".to_string()),
             ("timezone", "auto".to_string()),
         ])
         .send()
@@ -258,48 +299,100 @@ pub fn ensemble_stats(core: &Assistant, lat: f64, lon: f64) -> Result<EnsembleSt
     let temps = v["hourly"]["temperature_2m"].as_array().ok_or(err("集合数据异常"))?;
     let precs = v["hourly"]["precipitation"].as_array();
 
-    let mut t: Vec<f64> = temps.iter().filter_map(|x| x.as_f64()).collect();
-    if t.is_empty() {
+    let t: Vec<f64> = temps.iter().filter_map(|x| x.as_f64()).collect();
+    if t.len() < 6 {
         return Err(err("集合成员为空"));
     }
-    t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let n = t.len();
-    let median = if n % 2 == 1 { t[n / 2] } else { (t[n / 2 - 1] + t[n / 2]) / 2.0 };
+    let half = t.len() / 2;
+    let trend = median_of(t[half..].to_vec()) - median_of(t[..half].to_vec());
     let precip_frac = precs
         .map(|p| {
             let vals: Vec<f64> = p.iter().filter_map(|x| x.as_f64()).collect();
             if vals.is_empty() {
                 0.0
             } else {
-                let wet = vals.iter().filter(|&&x| x > 0.05).count();
+                let wet = vals.iter().filter(|&&x| x > 0.1).count();
                 wet as f64 / vals.len() as f64
             }
         })
         .unwrap_or(0.0);
-    Ok(EnsembleStats {
-        members: n,
-        median,
-        min: t[0],
-        max: t[n - 1],
+    Ok(Forecast24 {
+        hi: t.iter().cloned().fold(f64::MIN, f64::max),
+        lo: t.iter().cloned().fold(f64::MAX, f64::min),
+        trend,
         precip_frac,
     })
 }
 
-fn clothing_advice(temp: f64, precip_frac: f64) -> String {
-    let mut tips = vec![];
-    match temp {
-        t if t < 0.0 => tips.push("严寒,羽绒服+保暖配饰"),
-        t if t < 10.0 => tips.push("偏冷,厚外套"),
-        t if t < 20.0 => tips.push("微凉,外套/薄毛衣"),
-        t if t < 28.0 => tips.push("舒适,长袖即可"),
-        _ => tips.push("偏热,短袖"),
+/// 风速 m/s → 蒲福风级
+pub fn wind_level(ms: f64) -> u32 {
+    const THRESH: [(f64, u32); 13] = [
+        (0.2, 0), (1.5, 1), (3.3, 2), (5.4, 3), (7.9, 4), (10.7, 5), (13.8, 6),
+        (17.1, 7), (20.7, 8), (24.4, 9), (28.4, 10), (32.6, 11), (f64::MAX, 12),
+    ];
+    for (lim, lv) in THRESH {
+        if ms <= lim {
+            return lv;
+        }
     }
-    if precip_frac > 0.4 {
-        tips.push("降水概率偏高,建议带伞");
-    } else if precip_frac > 0.15 {
-        tips.push("降水可能性存在,可备伞");
+    12
+}
+
+/// 播报式文本组装(所有天气出口共用;纯函数,可单测)
+pub fn broadcast_text(
+    place: &str,
+    now_desc: Option<&str>,
+    humidity: Option<u32>,
+    tonight: Option<&str>,
+    f24: Option<Forecast24>,
+    warns: &[String],
+    source: &str,
+) -> String {
+    let mut lines = vec![format!("🌤 {place}天气播报:")];
+    let mut now_parts: Vec<String> = Vec::new();
+    if let Some(d) = now_desc {
+        if !d.is_empty() {
+            now_parts.push(d.to_string());
+        }
     }
-    tips.join(";")
+    if let Some(h) = humidity {
+        if h > 0 {
+            now_parts.push(format!("湿度{h}%"));
+        }
+    }
+    if !now_parts.is_empty() {
+        lines.push(format!("现在{}。", now_parts.join("、")));
+    }
+    if let Some(t) = tonight {
+        if !t.is_empty() {
+            lines.push(format!("{t}。"));
+        }
+    }
+    if let Some(f) = f24 {
+        let trend_txt = if f.trend >= 0.8 {
+            format!("气温上升约{:.0}°C", f.trend)
+        } else if f.trend <= -0.8 {
+            format!("气温下降约{:.0}°C", -f.trend)
+        } else {
+            "气温变化不大".to_string()
+        };
+        let pct = f.precip_frac * 100.0;
+        let rain = if f.precip_frac >= 0.6 {
+            format!("降水概率偏高({pct:.0}%)")
+        } else if f.precip_frac >= 0.3 {
+            format!("可能有降水({pct:.0}%)")
+        } else {
+            format!("降水概率低({pct:.0}%)")
+        };
+        lines.push(format!(
+            "未来24小时:最高{:.1}°C、最低{:.1}°C,{},{}。",
+            f.hi, f.lo, trend_txt, rain
+        ));
+    }
+    lines.extend(warns.iter().cloned());
+    lines.push(String::new());
+    lines.push(format!("—— {source}"));
+    lines.join("\n")
 }
 
 // ---------------- 综合评价(定位) ----------------
@@ -308,58 +401,26 @@ pub fn comprehensive(core: &Assistant, lat: f64, lon: f64, place: &str) -> Resul
     // 两源并行
     let core_ref = &*core;
     let (met_res, ens_res) = std::thread::scope(|s| {
-        let a = s.spawn(|| met_now(core_ref, lat, lon));
-        let b = s.spawn(|| ensemble_stats(core_ref, lat, lon));
-        (a.join(), b.join())
+        let a = s.spawn(|| met_now(core_ref, lat, lon).ok());
+        let b = s.spawn(|| ensemble_24h(core_ref, lat, lon).ok());
+        (a.join().unwrap_or(None), b.join().unwrap_or(None))
     });
-
-    let mut lines = vec![format!("🌦 综合天气评价 · {place}")];
-    let mut temp_for_advice: Option<f64> = None;
-    let mut precip_frac = 0.0;
-    let mut srcs = 0;
-
-    if let Ok(Ok(m)) = met_res {
-        srcs += 1;
-        temp_for_advice = Some(m.temp);
-        lines.push(format!(
-            "🏛 挪威气象局(独立机构):{:.1}°C,湿度{:.0}%,{}风 {:.1}m/s{}",
-            m.temp,
-            m.humidity,
-            wind_dir(m.wind_dir),
-            m.wind_speed,
-            m.precip_1h
-                .map(|p| format!(",未来1h降水 {:.1}mm", p))
-                .unwrap_or_default()
-        ));
-    }
-    if let Ok(Ok(e)) = ens_res {
-        srcs += 1;
-        precip_frac = e.precip_frac;
-        temp_for_advice.get_or_insert(e.median);
-        let spread = e.max - e.min;
-        let agree = if spread <= 1.0 {
-            "高(各成员基本一致)"
-        } else if spread <= 3.0 {
-            "中(存在分歧)"
-        } else {
-            "低(分歧较大,预报不确定)"
-        };
-        lines.push(format!(
-            "🌐 GFS集合预报({}个成员):中位 {:.1}°C,区间 {:.1}~{:.1}°C\n   一致性:{} | 降水成员占比 {:.0}%",
-            e.members, e.median, e.min, e.max, agree, e.precip_frac * 100.0
-        ));
-    }
-    if srcs == 0 {
+    if met_res.is_none() && ens_res.is_none() {
         return Err(err("天气源暂时都连不上,稍后再试试~"));
     }
-    if let Some(t) = temp_for_advice {
-        lines.push(format!("🧭 综合:{:.1}°C左右;{}", t, clothing_advice(t, precip_frac)));
-    }
-    lines.push(String::new());
-    lines.push(
-        "—— 按坐标就地计算:MET挪威(独立机构)+ GFS集合30成员;非模糊城市级数据".to_string(),
-    );
-    Ok(lines.join("\n"))
+    let now_desc = met_res
+        .as_ref()
+        .map(|m| format!("{:.1}°C,{}风{}级", m.temp, wind_dir(m.wind_dir), wind_level(m.wind_speed)));
+    let humidity = met_res.as_ref().map(|m| m.humidity as u32);
+    Ok(broadcast_text(
+        place,
+        now_desc.as_deref(),
+        humidity,
+        None,
+        ens_res,
+        &[],
+        "数据:挪威气象局·GFS集合预报(按坐标就地计算)",
+    ))
 }
 
 // ---------------- 城市天气(兼容旧入口) ----------------
@@ -405,15 +466,73 @@ pub fn geocode(core: &Assistant, city: &str) -> Result<Geo, CoreError> {
     })
 }
 
-/// 坐标实况(MET,简洁版)
+/// 坐标实况(MET,播报式)
 pub fn met_basic(core: &Assistant, lat: f64, lon: f64, place: &str) -> Result<String, CoreError> {
-    let m = met_now(core, lat, lon)?;
-    Ok(format!(
-        "📍 {} 实况(挪威气象局)\n{:.1}°C,湿度{:.0}%,{}风 {:.1}m/s",
-        place,
+    let core_ref = &*core;
+    let (met_res, ens_res) = std::thread::scope(|s| {
+        let a = s.spawn(|| met_now(core_ref, lat, lon));
+        let b = s.spawn(|| ensemble_24h(core_ref, lat, lon).ok());
+        (a.join().unwrap_or(Err(err("MET无数据"))), b.join().unwrap_or(None))
+    });
+    let m = met_res?;
+    let now_desc = format!(
+        "{:.1}°C,{}风{}级",
         m.temp,
-        m.humidity,
         wind_dir(m.wind_dir),
-        m.wind_speed
+        wind_level(m.wind_speed)
+    );
+    Ok(broadcast_text(
+        place,
+        Some(&now_desc),
+        Some(m.humidity as u32),
+        None,
+        ens_res,
+        &[],
+        "数据:挪威气象局·GFS集合预报",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn broadcast_text_shapes_sentences() {
+        let f = Forecast24 { hi: 29.0, lo: 21.0, trend: 2.5, precip_frac: 0.35 };
+        let out = broadcast_text(
+            "北京",
+            Some("晴,26°C,南风2级"),
+            Some(65),
+            Some("今夜最低22°C"),
+            Some(f),
+            &["⚠️ 北京·暴雨(蓝色) 07-14 08:00发布".to_string()],
+            "数据:测试",
+        );
+        assert!(out.contains("北京天气播报:"));
+        assert!(out.contains("湿度65%"));
+        assert!(out.contains("今夜最低22°C。"));
+        assert!(out.contains("未来24小时:最高29.0°C、最低21.0°C"));
+        assert!(out.contains("气温上升"));
+        assert!(out.contains("可能有降水(35%)"));
+        assert!(out.contains("⚠️ 北京·暴雨"));
+        assert!(out.ends_with("—— 数据:测试"));
+    }
+
+    #[test]
+    fn broadcast_text_tolerates_missing_sources() {
+        // MET/集合/预警全缺:只有地名+来源,不应出现空句
+        let out = broadcast_text("某地", None, None, None, None, &[], "数据:测试");
+        assert!(out.contains("某地天气播报:"));
+        assert!(!out.contains("现在"));
+        assert!(!out.contains("未来24小时"));
+    }
+
+    #[test]
+    fn wind_level_matches_beaufort() {
+        assert_eq!(wind_level(0.1), 0);
+        assert_eq!(wind_level(2.0), 2);
+        assert_eq!(wind_level(6.0), 4);
+        assert_eq!(wind_level(14.0), 7);
+        assert_eq!(wind_level(40.0), 12);
+    }
 }
