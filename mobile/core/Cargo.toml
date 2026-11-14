@@ -1,0 +1,33 @@
+[package]
+name = "lpasistant_core"
+version = "1.0.0"
+edition = "2021"
+description = "日常小助手核心引擎:规则解析/提醒/天气/新闻/诗词(纯 Rust,无 AI)"
+
+[lib]
+name = "lpasistant_core"
+crate-type = ["lib", "cdylib"]
+
+# 用于从编译产物生成 Kotlin 绑定: cargo run --bin uniffi-bindgen -- generate --library ...
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+uniffi = { version = "0.29", features = ["cli"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+chrono = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+# 注意:不能用 strip = true / "symbols" —— 会剥掉 uniffi 元数据符号,
+# 导致 uniffi-bindgen library 模式静默生成空目录。debuginfo 体积仍可控。
+strip = "debuginfo"
+codegen-units = 1

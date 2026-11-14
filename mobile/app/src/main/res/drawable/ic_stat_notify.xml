@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标:与启动图标同款「电子漂移曲线一周期切片」白色线条 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M79.41,45.47 C73.43,47.36 65.85,50.77 60.47,54 C54.28,56.79 47.89,59.67 41.69,62.46 C40.49,63 39.19,63.28 37.88,63.28 C32.75,63.28 28.59,59.13 28.59,54 C28.59,48.87 32.75,44.72 37.88,44.72 C39.19,44.72 40.49,45 41.69,45.54 C47.89,48.33 54.28,51.21 60.47,54 C65.85,57.23 73.43,60.64 79.41,62.53"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="5.25"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+</vector>

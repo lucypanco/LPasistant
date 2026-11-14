@@ -1,0 +1,12 @@
+*.iml
+.idea/
+.gradle/
+build/
+local.properties
+
+# Rust 构建产物
+core/target/
+
+# 生成物(由 uniffi-bindgen / cargo-ndk 产出)
+app/src/main/jniLibs/
+app/src/main/java/uniffi/

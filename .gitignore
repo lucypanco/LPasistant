@@ -1,0 +1,29 @@
+# 构建产物
+mobile/app/build/
+mobile/app/.cxx/
+mobile/build/
+mobile/.gradle/
+mobile/core/target/
+mobile/app/src/main/jniLibs/
+
+# 生成物(uniffi-bindgen / cargo-ndk 产出,可重建)
+mobile/app/src/main/java/uniffi/
+
+# 发布产物(APK 用 GitHub Releases 分发,不进代码库)
+*.apk
+release/
+
+# 个人笔记与真机截图(不入公共仓库)
+notes/
+
+# 临时/本机文件
+theme_preview.html
+local.properties
+*.iml
+.idea/
+.gradle/
+__pycache__/
+*.pyc
+Thumbs.db
+.DS_Store
+scripts/icon/backup_old/
