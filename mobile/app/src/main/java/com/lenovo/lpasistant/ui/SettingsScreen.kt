@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Geocoder
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -77,6 +78,11 @@ fun SettingsScreen(
     var llmMode by remember { mutableStateOf("narrow") }
     var geoEnabled by remember { mutableStateOf(false) }
     var geoStatus by remember { mutableStateOf("") }
+    var waterTimes by remember { mutableStateOf("10:00,16:00") }
+    var workTimes by remember { mutableStateOf("09:00,18:00") }
+    var newsFeeds by remember { mutableStateOf("") }
+    var radioFeeds by remember { mutableStateOf("") }
+    val context = LocalContext.current
     var city by remember { mutableStateOf("北京") }
     var modelStatus by remember { mutableStateOf("…") }
     var reminderCount by remember { mutableStateOf(0) }
@@ -89,6 +95,10 @@ fun SettingsScreen(
             city = CoreBridge.getSetting("default_city").ifBlank { "北京" }
             modelStatus = LlmController.modelStatus(ctx)
             reminderCount = CoreBridge.reminders().size
+            waterTimes = CoreBridge.getSetting("tmpl_water").ifBlank { "10:00,16:00" }
+            workTimes = CoreBridge.getSetting("tmpl_work").ifBlank { "09:00,18:00" }
+            newsFeeds = CoreBridge.getSetting("news_user_feeds")
+            radioFeeds = CoreBridge.getSetting("radio_user_stations")
             if (geoEnabled) geoStatus = locateStatus(ctx)
         }
     }
@@ -349,8 +359,76 @@ fun SettingsScreen(
             }
             HorizontalDivider()
 
+            // ---- 常用提醒默认时间(聊天页「喝水提醒」「工作提醒」一键应用)----
+            Text("常用提醒默认时间", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = waterTimes,
+                onValueChange = { waterTimes = it },
+                label = { Text("喝水提醒时刻(逗号分隔,每天循环)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    TextButton(onClick = {
+                        CoreBridge.setSetting("tmpl_water", waterTimes)
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    }) { Text("保存") }
+                }
+            )
+            OutlinedTextField(
+                value = workTimes,
+                onValueChange = { workTimes = it },
+                label = { Text("工作提醒时刻(逗号分隔,每天循环)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    TextButton(onClick = {
+                        CoreBridge.setSetting("tmpl_work", workTimes)
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    }) { Text("保存") }
+                }
+            )
+            Text(
+                "保存后,在聊天页点「喝水提醒」「工作提醒」即按这些时刻创建每日提醒",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            HorizontalDivider()
+
+            // ---- 新闻自定义源 ----
+            Text("新闻自定义源", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = newsFeeds,
+                onValueChange = { newsFeeds = it },
+                label = { Text("RSS 地址(每行一个,最多 5 个,与内置源合并抓取)") },
+                minLines = 2,
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    TextButton(onClick = {
+                        CoreBridge.setSetting("news_user_feeds", newsFeeds)
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    }) { Text("保存") }
+                }
+            )
+            HorizontalDivider()
+
+            // ---- 电台自定义源 ----
+            Text("电台自定义源", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = radioFeeds,
+                onValueChange = { radioFeeds = it },
+                label = { Text("每行「名称|流地址」(追加在内置台之后,最多 20 个)") },
+                minLines = 2,
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    TextButton(onClick = {
+                        CoreBridge.setSetting("radio_user_stations", radioFeeds)
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    }) { Text("保存") }
+                }
+            )
+            HorizontalDivider()
+
             // ---- 天气默认城市 ----
-            val context = LocalContext.current
             OutlinedTextField(
                 value = city,
                 onValueChange = { city = it },

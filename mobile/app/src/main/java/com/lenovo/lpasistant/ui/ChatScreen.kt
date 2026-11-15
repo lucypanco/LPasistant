@@ -96,11 +96,17 @@ private val QUICK_CHIPS = listOf(
     "新闻",
     "国际",
     "电台",
-    "诗词"
+    "诗词",
+    "喝水提醒",
+    "工作提醒",
 )
 
 @Composable
-fun ChatScreen(onOpenSettings: () -> Unit) {
+fun ChatScreen(
+    onOpenSettings: () -> Unit,
+    onOpenReminders: () -> Unit,
+    onOpenHelp: () -> Unit,
+) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -215,12 +221,29 @@ fun ChatScreen(onOpenSettings: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
             )
-            IconButton(onClick = onOpenSettings) {
-                Icon(
-                    painterResource(R.drawable.ic_tune),
-                    contentDescription = "设置",
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
+            Box {
+                var navOpen by remember { mutableStateOf(false) }
+                IconButton(onClick = { navOpen = !navOpen }) {
+                    Icon(
+                        painterResource(R.drawable.ic_tune),
+                        contentDescription = "导航",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                DropdownMenu(expanded = navOpen, onDismissRequest = { navOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("⚙ 设置") },
+                        onClick = { navOpen = false; onOpenSettings() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("⏰ 提醒管理") },
+                        onClick = { navOpen = false; onOpenReminders() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("📖 使用帮助") },
+                        onClick = { navOpen = false; onOpenHelp() }
+                    )
+                }
             }
         }
         HorizontalDivider()

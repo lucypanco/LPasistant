@@ -241,9 +241,17 @@ fn try_dispatch(core: &Assistant, t: &str) -> Option<String> {
         });
     }
 
+    // ---- 常用提醒模板(喝水/工作;设置页可自定义默认时刻)----
+    if t == "喝水提醒" {
+        return Some(apply_daily_template(core, "喝水", "tmpl_water", "10:00,16:00"));
+    }
+    if t == "工作提醒" {
+        return Some(apply_daily_template(core, "工作", "tmpl_work", "09:00,18:00"));
+    }
+
     // ---- 电台 ----
     if t == "电台" {
-        return Some(crate::radio::stations_text());
+        return Some(crate::radio::stations_text(core));
     }
     if let Some(rest) = t.strip_prefix("电台搜索").or_else(|| t.strip_prefix("电台 搜索")) {
         let q = rest.trim();
@@ -406,4 +414,61 @@ mod flow_tests {
         assert_eq!(list[1].text, "学校活动");
         let _ = std::fs::remove_file(&db);
     }
+}
+
+
+/// 每日提醒模板:按 kv 里的默认时刻批量创建/重建同名每日提醒
+fn apply_daily_template(core: &Assistant, label: &str, key: &str, default_times: &str) -> String {
+    let times_raw = core
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| s.kv_get(key))
+        .unwrap_or_else(|| default_times.to_string());
+    let times: Vec<(u32, u32)> = times_raw
+        .split(',')
+        .filter_map(|t| crate::timeparse::parse_clock(t.trim()))
+        .map(|(h, m, _)| (h, m))
+        .collect();
+    if times.is_empty() {
+        return format!("⚠️ {label}提醒时刻格式不对(应为「10:00,16:00」),请在设置页修改");
+    }
+    let mut store = match core.store.lock() {
+        Ok(s) => s,
+        Err(_) => return "😅 存储忙,稍后再试".to_string(),
+    };
+    // 幂等:移除同名旧提醒(文本一致即视为同组)
+    let olds: Vec<String> = store
+        .list_reminders()
+        .into_iter()
+        .filter(|r| r.text == label && r.recur.as_deref() == Some("daily"))
+        .map(|r| r.id.clone())
+        .collect();
+    for id in &olds {
+        store.remove_reminder(id);
+    }
+    let mut added: Vec<String> = Vec::new();
+    for (h, m) in &times {
+        if let Ok(rec) = store.add_reminder(label, "text", {
+            use chrono::{Datelike, Timelike};
+            let now = chrono::Local::now().naive_local();
+            let mut dt = now.date().and_hms_opt(*h, *m, 0).unwrap_or(now);
+            if dt <= now {
+                dt += chrono::Duration::days(1);
+            }
+            dt
+        }, Some("daily")) {
+            added.push(format!(
+                "{} [{}]",
+                human_dt(&crate::timeparse::epoch_to_local(rec.next_run)),
+                rec.id
+            ));
+        }
+    }
+    let _ = &added;
+    format!(
+        "✓ 已设置每天{label}提醒:{}(共{}个时刻;聊天页点「{label}提醒」可随时重建)",
+        times.iter().map(|(h, m)| format!("{h:02}:{m:02}")).collect::<Vec<_>>().join("、"),
+        added.len()
+    )
 }

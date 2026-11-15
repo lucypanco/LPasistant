@@ -113,8 +113,8 @@ pub trait LlmInfer: Send + Sync {
 pub struct Assistant {
     pub(crate) store: Mutex<Store>,
     pub(crate) http: reqwest::blocking::Client,
-    pub(crate) pending: Mutex<Option<crate::llm::PendingReminder>>,
     pub(crate) clarify: Mutex<Option<crate::llm::ClarifyState>>,
+    pub(crate) pending: Mutex<Option<crate::llm::PendingReminder>>,
     pub(crate) llm_cb: Mutex<Option<Box<dyn LlmInfer>>>,
     pub(crate) location_cb: Mutex<Option<Box<dyn LocationProvider>>>,
 }
@@ -128,8 +128,8 @@ impl Assistant {
         Ok(Self {
             store: Mutex::new(store),
             http: crate::net::client(),
-            pending: Mutex::new(None),
             clarify: Mutex::new(None),
+            pending: Mutex::new(None),
             llm_cb: Mutex::new(None),
             location_cb: Mutex::new(None),
         })
@@ -246,13 +246,13 @@ impl Assistant {
 
     // ---- 电台(数据/搜索在 Rust;播放由 Kotlin Media3 完成) ----
     pub fn radio_stations(&self) -> Vec<RadioStationRecord> {
-        crate::radio::STATIONS
-            .iter()
+        crate::radio::all_stations(self)
+            .into_iter()
             .map(|s| RadioStationRecord {
-                name: s.name.to_string(),
-                url: s.url.to_string(),
-                desc: s.desc.to_string(),
-                region: s.region.to_string(),
+                name: s.name,
+                url: s.url,
+                desc: s.desc,
+                region: "内置".to_string(),
             })
             .collect()
     }

@@ -49,10 +49,49 @@ pub const STATIONS: &[Station] = &[
     },
 ];
 
-pub fn stations_text() -> String {
+/// 拥有所有权的台站(内置 + 用户自定义)
+pub struct StationOwned {
+    pub name: String,
+    pub url: String,
+    pub desc: String,
+}
+
+/// 全部台站 = 内置精选 + 用户自定义(kv radio_user_stations,一行「名称|地址」,≤20个)
+pub fn all_stations(core: &Assistant) -> Vec<StationOwned> {
+    let mut v: Vec<StationOwned> = STATIONS
+        .iter()
+        .map(|s| StationOwned {
+            name: s.name.to_string(),
+            url: s.url.to_string(),
+            desc: s.desc.to_string(),
+        })
+        .collect();
+    if let Ok(store) = core.store.lock() {
+        if let Some(kvs) = store.kv_get("radio_user_stations") {
+            for line in kvs.lines() {
+                let Some((name, url)) = line.split_once('|') else { continue };
+                let (name, url) = (name.trim(), url.trim());
+                if name.is_empty() || !url.starts_with("http") {
+                    continue;
+                }
+                if v.iter().any(|x| x.url == url) || v.len() >= 20 {
+                    continue;
+                }
+                v.push(StationOwned {
+                    name: name.to_string(),
+                    url: url.to_string(),
+                    desc: "自定义".to_string(),
+                });
+            }
+        }
+    }
+    v
+}
+
+pub fn stations_text(core: &Assistant) -> String {
     let mut lines = vec!["📻 电台(快捷词条卡片可点 ▶ 播放)".to_string()];
-    for (i, s) in STATIONS.iter().enumerate() {
-        lines.push(format!("{}. {} —— {}({})", i + 1, s.name, s.desc, s.region));
+    for (i, s) in all_stations(core).into_iter().enumerate() {
+        lines.push(format!("{}. {} —— {}({})", i + 1, s.name, s.desc, "内置".to_string()));
     }
     lines.push("🔍 搜索全球数万台:电台 搜索 <关键词>(radio-browser 开放API)".to_string());
     lines.join("\n")

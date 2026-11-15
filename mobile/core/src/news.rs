@@ -23,6 +23,7 @@ pub enum Cat {
     Politics,
 }
 
+#[derive(Clone)]
 pub struct Feed {
     pub label: &'static str,
     pub url: &'static str,
@@ -221,11 +222,44 @@ fn interleave(a: Vec<NewsItem>, b: Vec<NewsItem>) -> Vec<NewsItem> {
     out
 }
 
+/// 用户自定义源(kv news_user_feeds,一行一个 URL,最多 5 个)
+fn user_feed_urls(core: &Assistant) -> Vec<String> {
+    core.store
+        .lock()
+        .ok()
+        .and_then(|s| s.kv_get("news_user_feeds"))
+        .map(|v| {
+            v.lines()
+                .map(str::trim)
+                .filter(|l| l.starts_with("https://") || l.starts_with("http://"))
+                .take(5)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 全部源 = 内置白名单 + 用户自定义(自定义源算国内综合类)
+pub fn all_feeds(core: &Assistant) -> Vec<Feed> {
+    let mut feeds: Vec<Feed> = FEEDS.to_vec();
+    for (i, url) in user_feed_urls(core).into_iter().enumerate() {
+        feeds.push(Feed {
+            label: Box::leak(format!("自定义{}", i + 1).into_boxed_str()),
+            url: Box::leak(url.into_boxed_str()),
+            cat: Cat::General,
+            foreign: false,
+        });
+    }
+    feeds
+}
+
 /// 结构化新闻列表(kind: all/intl/tech/politics)
 /// 「all/tech」同时含国内外源:两组各自 simhash 去重后对半交错,保证前 n 条国内外各半
 pub fn news_items(core: &Assistant, kind: &str, n: usize) -> Result<Vec<NewsItem>, CoreError> {
-    let items: Vec<&Feed> = FEEDS
-        .iter()
+    let all = all_feeds(core);
+    let items: Vec<&Feed> = all.iter()
+        .collect::<Vec<_>>()
+        .into_iter()
         .filter(|f| match kind {
             "intl" => f.foreign,
             "tech" => f.cat == Cat::Tech,

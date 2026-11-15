@@ -102,7 +102,11 @@ class MainActivity : ComponentActivity() {
                             onBack = { screen = "settings" }
                         )
                         "help" -> HelpScreen(onBack = { screen = "settings" })
-                        else -> ChatScreen(onOpenSettings = { screen = "settings" })
+                        else -> ChatScreen(
+                            onOpenSettings = { screen = "settings" },
+                            onOpenReminders = { screen = "reminders" },
+                            onOpenHelp = { screen = "help" }
+                        )
                     }
                 }
                 }
