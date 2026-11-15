@@ -319,8 +319,8 @@ fn looks_like_command(t: &str) -> bool {
 fn build_clarify_prompt(text: &str, reply: &str) -> String {
     format!(
         "你是提醒时间解析器。用户想设置提醒:「{text}」,并补充了时间信息:「{reply}」。\
-把合并后的提醒转成一行JSON,kind 只能是 rel/clock/daily/weekly/monthly/dayoffset/date;\
-时间用24小时制;时间仍不明确就输出 {{\"kind\":\"ask\",\"question\":\"...\"}}。只输出JSON。\nJSON:"
+把合并后的提醒转成一行JSON。示例:补充「大后天的下午三点」→ {{\"kind\":\"dayoffset\",\"days\":3,\"h\":15,\"m\":0}};补充「周五晚上八点」→ {{\"kind\":\"weekly\",\"wd\":4,\"h\":20,\"m\":0}}。kind 只能是 rel/clock/daily/weekly/monthly/dayoffset/date 之一(选一个值,不要照抄枚举清单);\
+时间用24小时制数字;时间仍不明确就输出 {{\"kind\":\"ask\",\"question\":\"...\"}}。只输出JSON。\nJSON:"
     )
 }
 

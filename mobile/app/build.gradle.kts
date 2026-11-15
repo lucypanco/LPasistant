@@ -53,8 +53,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // UniFFI 生成的绑定依赖 JNA
     implementation("net.java.dev.jna:jna:5.13.0@aar")
-    // 可选:本地 LLM 兜底(AI兜底)。不想要可删掉此行与 core/LlmController.kt,其余功能不受影响
-    implementation("com.google.mediapipe:tasks-genai:0.10.24")
+    // 本地 LLM 兜底:llama.cpp(NDK 静态编译,GGUF 直读;自建 JNI 桥,无第三方依赖)
+    // 产物 libllama_jni.so 由 scripts/llama_jni_build.sh 编译并放入 jniLibs
     // 电台播放(Media3/ExoPlayer,HLS 与 Icecast 均支持)
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")

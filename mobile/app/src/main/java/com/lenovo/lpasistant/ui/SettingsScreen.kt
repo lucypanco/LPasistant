@@ -3,6 +3,7 @@ package com.lenovo.lpasistant.ui
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Geocoder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -50,9 +51,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import java.util.Locale
 import com.lenovo.lpasistant.R
 import com.lenovo.lpasistant.core.CoreBridge
 import com.lenovo.lpasistant.core.LlmController
+import com.lenovo.lpasistant.core.LocationProviderImpl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -73,6 +76,7 @@ fun SettingsScreen(
     var aiEnabled by remember { mutableStateOf(false) }
     var llmMode by remember { mutableStateOf("narrow") }
     var geoEnabled by remember { mutableStateOf(false) }
+    var geoStatus by remember { mutableStateOf("") }
     var city by remember { mutableStateOf("北京") }
     var modelStatus by remember { mutableStateOf("…") }
     var reminderCount by remember { mutableStateOf(0) }
@@ -85,8 +89,15 @@ fun SettingsScreen(
             city = CoreBridge.getSetting("default_city").ifBlank { "北京" }
             modelStatus = LlmController.modelStatus(ctx)
             reminderCount = CoreBridge.reminders().size
+            if (geoEnabled) geoStatus = locateStatus(ctx)
         }
     }
+
+    // 开关切换时刷新定位状态
+    LaunchedEffect(geoEnabled) {
+        if (geoEnabled) geoStatus = locateStatus(ctx)
+    }
+
 
     val locationPerms = arrayOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
@@ -328,6 +339,14 @@ fun SettingsScreen(
                     }
                 )
             }
+            // 定位状态提示:成功(城市)/未授权/无数据
+            if (geoEnabled && geoStatus.isNotBlank()) {
+                Text(
+                    geoStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             HorizontalDivider()
 
             // ---- 天气默认城市 ----
@@ -349,5 +368,32 @@ fun SettingsScreen(
 
             Text("LPasistant v1.0", style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/** 定位状态:未授权/无数据/成功+城市名(系统 Geocoder 反查,不发给第三方网站) */
+private suspend fun locateStatus(c: Context): String = withContext(Dispatchers.IO) {
+    try {
+        val granted = ContextCompat.checkSelfPermission(
+            c, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+            c, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) return@withContext "✗ 尚未授予定位权限(开关打开后会弹授权)"
+        val coords = LocationProviderImpl(c).currentCoords()
+        if (coords.isNullOrBlank()) {
+            return@withContext "✗ 暂无最近位置数据(打开地图/导航类应用后再试)"
+        }
+        val lat = coords.split(",").getOrNull(0)?.toDoubleOrNull()
+        val lon = coords.split(",").getOrNull(1)?.toDoubleOrNull()
+        if (lat == null || lon == null) return@withContext "✗ 坐标解析异常"
+        if (!Geocoder.isPresent()) {
+            return@withContext "✓ 已拿到坐标(${ "%.3f,%.3f".format(lat, lon) }),此设备不支持反查城市"
+        }
+        val addr = Geocoder(c, Locale.CHINA).getFromLocation(lat, lon, 1)?.firstOrNull()
+        val city = addr?.locality ?: addr?.subAdminArea ?: addr?.adminArea ?: addr?.countryName ?: "未知区域"
+        "✓ 定位成功:$city(${ "%.3f,%.3f".format(lat, lon) })"
+    } catch (e: Exception) {
+        "✗ 定位失败:${e.message}"
     }
 }

@@ -18,7 +18,7 @@ static RE_REL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(半|\d+(?:\.
 static RE_DAILY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(每天|每日)\s*").unwrap());
 static RE_WEEKLY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^每\s*周\s*([一二三四五六日天])\s*").unwrap());
 static RE_BAREWEEK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^周\s*([一二三四五六日天])\s*").unwrap());
-static RE_DAYOFFSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(今天|明天|后天)\s*").unwrap());
+static RE_DAYOFFSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(大后天|今天|明天|后天)\s*").unwrap());
 static RE_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]\s*").unwrap());
 // 时段前缀:晚上8点 → 20:00,中午12点 → 12:00,下午3点半 → 15:30
 static RE_PERIOD: LazyLock<Regex> =
@@ -100,6 +100,7 @@ fn normalize_time_aliases(s: &str) -> String {
         .replace("今早", "今天早上")
         .replace("今晚", "今天晚上")
         .replace("今午", "今天中午")
+        .replace("下周末", "下周六")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,10 +374,12 @@ pub fn parse_when(text: &str, now: NaiveDateTime) -> Option<ParsedWhen> {
         let off = match caps.get(1).unwrap().as_str() {
             "今天" => 0,
             "明天" => 1,
+            "后天" => 2,
+            "大后天" => 3,
             _ => 2,
         };
         base_date = Some((now + Duration::days(off)).date());
-        rest = &rest[caps.get(0).unwrap().end()..];
+        rest = rest[caps.get(0).unwrap().end()..].trim_start_matches('的');
     } else if let Some(caps) = RE_BAREWEEK.captures(rest) {
         let wd = weekday_idx(caps.get(1)?.as_str())?;
         base_date = Some(next_weekday_date(now.date(), wd));
@@ -657,5 +660,38 @@ mod cn_num_tests {
         let p2 = parse_when("明早八点叫我起床", b).unwrap();
         assert_eq!(p2.when.format("%m-%d %H").to_string(), "11-15 08");
         assert_eq!(p2.rest, "叫我起床");
+    }
+}
+
+#[cfg(test)]
+mod vocab_tests {
+    use super::parse_when;
+
+    #[test]
+    fn 大后天与下周末() {
+        let b = chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        // 大后天的下午三点 → 2026-11-18 15:00
+        let p = parse_when("大后天的下午三点开会", b).unwrap();
+        assert_eq!(p.when.format("%m-%d %H").to_string(), "11-18 15");
+        assert!(p.rest.contains("开会"));
+        // 下周末 → 下周六(周末首日)
+        let p2 = parse_when("下周末前把报告写完", b).unwrap();
+        assert_eq!(p2.when.format("%m-%d").to_string(), "11-21");
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::{normalize_time_aliases, parse_when};
+
+    #[test]
+    fn 阶梯定位() {
+        let n = normalize_time_aliases("大后天的下午三点开会");
+        println!("normalize 结果: {:?}", n);
+        assert!(n.contains("3点"), "中文数字未转换: {n}");
+        let b = chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let p = parse_when("大后天的下午三点开会", b).unwrap();
+        println!("when={:?} rest={:?}", p.when, p.rest);
+        assert_eq!(p.when.format("%H").to_string(), "15");
     }
 }
