@@ -4,11 +4,13 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,14 +29,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
@@ -330,28 +331,60 @@ fun ChatScreen(onOpenSettings: () -> Unit) {
                 }
             }
         }
-        // 输入行:IntrinsicSize 让发送键与输入框始终等高(多行输入时同步长高)
+        // 输入行:与快捷词条同款的描边胶囊(BasicTextField,提示/文字垂直居中)
+        // 发送键 = 同款压扁胶囊(压扁圆),整体高度 42dp
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(8.dp)
-                .height(IntrinsicSize.Min)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            OutlinedTextField(
+            BasicTextField(
                 value = input,
                 onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("输入指令,如:提醒我 30分钟后 喝水") },
-                maxLines = 4,
-                shape = RoundedCornerShape(percent = 50)
+                modifier = Modifier
+                    .weight(1f)
+                    .height(42.dp)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(percent = 50))
+                    .padding(horizontal = 16.dp),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                singleLine = true,
+                decorationBox = { inner ->
+                    Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.CenterStart) {
+                        if (input.isEmpty()) {
+                            Text(
+                                "输入指令,如:提醒我 30分钟后 喝水",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
+                        inner()
+                    }
+                }
             )
             Spacer(Modifier.width(8.dp))
-            Button(
-                onClick = { send(input) },
-                modifier = Modifier.fillMaxHeight(),
+            val sendPress = rememberPress()
+            Surface(
                 shape = RoundedCornerShape(percent = 50),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)
-            ) { Text("发送") }
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .height(42.dp)
+                    .pressScale(sendPress)
+                    .clickable(interactionSource = sendPress, indication = null) { send(input) }
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("发送", color = MaterialTheme.colorScheme.onPrimary)
+                }
+            }
         }
     }
 
