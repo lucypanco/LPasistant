@@ -1,14 +1,17 @@
-//! 受控本地 LLM 兜底(可选,默认关闭)—— 分割式架构(2026-11-15 按用户设计重构)
+//! 受控本地 LLM 兜底(可选,默认关闭)—— v3:分割+语义数字转换+依次确认
 //!
-//! 分层(特权/隔离,参考 CaMeL 与 Copilot Studio 插槽填充):
-//!   模型(隔离层):只做「语句分割」——把句子切成 事项(event) + 时间短语(time),
-//!                原样保留,不换算、不输出结构化字段(0.5B 复读枚举/幻觉日期,真机实证不可靠)
-//!   规则(特权层):时间短语 → 精确时间戳(词表+算术,确定性可测试);
-//!                缺槽依次追问(先事项后时间,≤2 轮),确认键落库
+//! 分层(特权/隔离):
+//!   模型(隔离层):①语句分割(事项/时间短语,原样);②时间短语→数字规格
+//!     (days/hour/minute/recur)。prompt 内含「今天日期+对照表」,模型做查表
+//!     而非算术;输出数字由规则层校验(越界即无效)。
+//!   规则(特权层):时间短语先过确定性解析(词表命中→规则赢);未命中才用
+//!     模型数字换算;缺槽依次追问(时间→≤2轮;确认键落库)。
 //!
-//! 真机日志依据:模型分段质量可靠(路由/抽取全对),结构化输出不可靠。
+//! 真机日志依据(2026-11-15):模型分段/路由可靠;结构化字段输出会复读枚举
+//! 与幻觉日期 → 用「prompt 对照表+数字输出+规则校验」三级兜住。
 
 use serde_json::Value;
+use chrono::{Datelike, Duration, NaiveDateTime, Timelike, Weekday};
 
 use crate::api::Assistant;
 use crate::intent::{recur_label, USAGE};
@@ -21,7 +24,6 @@ pub struct PendingReminder {
     pub when: NaiveDateTime,
     pub recur: Option<String>,
 }
-use chrono::NaiveDateTime;
 
 /// 追问状态:事项/时间槽依次补齐
 #[derive(Debug, Clone)]
@@ -32,6 +34,10 @@ pub struct ClarifyState {
     pub payload: String,
     /// 已追问轮数(上限2轮)
     pub round: u32,
+    /// 已确定的相对天数(模型转换结果,规则校验后)
+    pub days: Option<u32>,
+    /// 已确定的循环(daily/weekly:X/monthly:X;空=单次)
+    pub recur: String,
 }
 
 /// 疑问句预闸门(纯规则,零推理):拦住"用提醒句式问问题"的干扰输入。
@@ -46,27 +52,104 @@ pub(crate) fn looks_like_question(t: &str) -> bool {
     MARKERS.iter().any(|m| t.contains(m))
 }
 
-// ---------- 分割 prompt(模型的唯一职责) ----------
+// ---------- prompt(模型:分割 + 查表转数字) ----------
 
-pub fn build_segment_prompt(utterance: &str) -> String {
+fn today_line() -> String {
+    let now = chrono::Local::now();
+    let wd = match now.weekday() {
+        Weekday::Mon => "周一",
+        Weekday::Tue => "周二",
+        Weekday::Wed => "周三",
+        Weekday::Thu => "周四",
+        Weekday::Fri => "周五",
+        Weekday::Sat => "周六",
+        Weekday::Sun => "周日",
+    };
     format!(
-        "你是语句分割器。把句子分成「事项」和「时间」两段,输出一行JSON,只输出JSON本身:\n\
-         {{\"event\":\"把报告写完\",\"time\":\"下周末前\"}}\n\
-         {{\"event\":\"跑步\",\"time\":\"明晚八点\"}}\n\
-         {{\"event\":\"交房租\",\"time\":\"每月15号\"}}\n\
-         {{\"event\":\"喝水\",\"time\":\"30分钟后\"}}\n\
-         {{\"event\":\"部门例会\",\"time\":\"\"}}\n\
-         规则:event=要做什么(把时间词去掉);time=什么时候(保留原词,不要换算成数字);句子没有时间就 time 为空串。\n\
-         句子:{utterance}\nJSON:"
+        "{}({wd}) {:02}:{:02}",
+        now.format("%Y-%m-%d"),
+        now.hour(),
+        now.minute()
     )
 }
 
+/// 对照表段(两个 prompt 共用;模型按表查数,不做算术)
+const TIME_TABLE: &str = "对照表:今天=0天,明天=1天,后天=2天,大后天=3天;每天 recur=daily;每周X recur=weekly:X(X:周一=0,周二=1,…,周日=6);每月X号 recur=monthly:X。";
+
+pub fn build_segment_prompt(utterance: &str) -> String {
+    format!(
+        "你是语句分割器。今天是{}。把句子分成「事项」和「时间」,输出一行JSON,只输出JSON本身:\n\
+         {{\"event\":\"把报告写完\",\"time\":\"下周末前\",\"days\":7,\"hour\":9,\"minute\":0,\"recur\":\"\"}}\n\
+         {{\"event\":\"开会\",\"time\":\"大后天下午三点\",\"days\":3,\"hour\":15,\"minute\":0,\"recur\":\"\"}}\n\
+         {{\"event\":\"交房租\",\"time\":\"每月15号上午十点\",\"days\":15,\"hour\":10,\"minute\":0,\"recur\":\"monthly:15\"}}\n\
+         {{\"event\":\"部门例会\",\"time\":\"\",\"days\":null,\"hour\":null,\"minute\":null,\"recur\":\"\"}}\n\
+         规则:event=要做什么(时间词移入 time);time=时间短语原词;days/hour/minute 按对照表转成数字;没有的时刻填 null;每天用 recur=daily;句子没有时间就 days/hour/minute/recur 全空。\n\
+        {TIME_TABLE}\n\
+         句子:{utterance}\nJSON:",
+        today_line()
+    )
+}
+
+pub fn build_wide_prompt(utterance: &str) -> String {
+    format!(
+        "你是个人助手路由器。今天是{}。{}判断这句话用哪个功能,输出一行JSON,只输出JSON本身:\n\
+         {{\"route\":\"reminder\",\"event\":\"把报告写完\",\"time\":\"下周末前\",\"days\":7,\"hour\":9,\"minute\":0,\"recur\":\"\"}}\n\
+         {{\"route\":\"weather\",\"city\":\"北京\"}}\n\
+         {{\"route\":\"news\",\"kind\":\"all\"}}\n\
+         {{\"route\":\"poetry\",\"query\":\"励志\"}}\n\
+         {{\"route\":\"radio\",\"query\":\"爵士\"}}\n\
+         {{\"route\":\"none\"}}\n\
+         规则:\n\
+         - reminder:event=要做什么(去掉时间词);time=时间短语原词;days/hour/minute/recur 按对照表转成数字;没有的时刻填 null;没有时间全空;\n\
+         - weather/news/poetry/radio:query 填关键词;\n\
+         - 与以上功能都无关 → {{\"route\":\"none\"}};\n\
+         句子:{utterance}\nJSON:",
+        today_line(),
+        TIME_TABLE
+    )
+}
+
+/// 追问时刻的第二阶段(模型转换用户补充的时间;规则校验)
+pub fn build_reply_spec_prompt(reply: &str) -> String {
+    format!(
+        "今天是{}。把用户补充的提醒时间转成一行JSON,只输出JSON本身:\n\
+         {{\"days\":1,\"hour\":15,\"minute\":0,\"recur\":\"\"}}\n\
+         例:「大后天的下午三点」→ {{\"days\":3,\"hour\":15,\"minute\":0,\"recur\":\"\"}};「每天早上八点」→ {{\"days\":0,\"hour\":8,\"minute\":0,\"recur\":\"daily\"}}。\n\
+         没把握就全部填 null。\n\
+         用户补充:{reply}\nJSON:",
+        today_line()
+    )
+}
+
+// ---------- 解析(宽容:字段缺失/类型错都容忍) ----------
+
+#[derive(Debug, Default, Clone)]
 pub struct Segmentation {
     pub event: String,
     pub time: String,
+    pub days: Option<u32>,
+    pub hour: Option<u32>,
+    pub minute: Option<u32>,
+    pub recur: String,
 }
 
-/// 解析分割输出(容忍围栏与废话;字段缺失视为空)
+#[derive(Debug, Default, Clone)]
+pub struct TimeSpec {
+    pub days: Option<u32>,
+    pub hour: Option<u32>,
+    pub minute: Option<u32>,
+    pub recur: String,
+}
+
+fn json_u32(v: &Value, key: &str) -> Option<u32> {
+    match &v[key] {
+        Value::Number(n) => n.as_u64().map(|x| x as u32),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// 分割输出解析(容忍围栏与废话)
 pub fn parse_segment(out: &str) -> Option<Segmentation> {
     let start = out.find('{')?;
     let end = out.rfind('}')?;
@@ -74,9 +157,168 @@ pub fn parse_segment(out: &str) -> Option<Segmentation> {
         return None;
     }
     let v: Value = serde_json::from_str(&out[start..=end]).ok()?;
-    let event = v["event"].as_str().unwrap_or("").trim().to_string();
-    let time = v["time"].as_str().unwrap_or("").trim().to_string();
-    Some(Segmentation { event, time })
+    Some(Segmentation {
+        event: v["event"].as_str().unwrap_or("").trim().to_string(),
+        time: v["time"].as_str().unwrap_or("").trim().to_string(),
+        days: json_u32(&v, "days"),
+        hour: json_u32(&v, "hour"),
+        minute: json_u32(&v, "minute"),
+        recur: v["recur"].as_str().unwrap_or("").trim().to_string(),
+    })
+}
+
+/// 解析宽兜底路由输出
+pub fn parse_wide(out: &str) -> Result<WideRoute, String> {
+    let start = out.find('{').ok_or("输出里没有JSON")?;
+    let end = out.rfind('}').ok_or("输出里没有JSON")?;
+    if end < start {
+        return Err("输出里没有JSON".into());
+    }
+    let v: Value = serde_json::from_str(&out[start..=end]).map_err(|e| format!("JSON非法:{e}"))?;
+    let route = v["route"].as_str().ok_or("缺少route")?;
+    let field = |k: &str| -> String { clip_field(v[k].as_str().unwrap_or(""), 40) };
+    let num = |k: &str| json_u32(&v, k);
+    Ok(match route {
+        "reminder" => WideRoute::Reminder {
+            event: {
+                let e = field("event");
+                if e.is_empty() { field("text") } else { e }
+            },
+            time: field("time"),
+            days: num("days"),
+            hour: num("hour"),
+            minute: num("minute"),
+            recur: field("recur"),
+        },
+        "weather" => WideRoute::Weather { city: field("city") },
+        "news" => {
+            let k = field("kind");
+            WideRoute::News {
+                kind: if matches!(k.as_str(), "intl" | "tech" | "politics") { k } else { "all".to_string() },
+            }
+        }
+        "poetry" => WideRoute::Poetry { query: field("query") },
+        "radio" => WideRoute::Radio { query: field("query") },
+        "none" => WideRoute::None,
+        other => return Err(format!("未知route:{other}")),
+    })
+}
+
+/// 追问第二阶段的数字规格解析(容忍围栏与废话)
+pub fn parse_reply_spec(out: &str) -> Option<TimeSpec> {
+    let start = out.find('{')?;
+    let end = out.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    let v: Value = serde_json::from_str(&out[start..=end]).ok()?;
+    Some(TimeSpec {
+        days: json_u32(&v, "days"),
+        hour: json_u32(&v, "hour"),
+        minute: json_u32(&v, "minute"),
+        recur: v["recur"].as_str().unwrap_or("").trim().to_string(),
+    })
+}
+
+#[derive(Debug, Clone)]
+pub enum WideRoute {
+    Reminder {
+        event: String,
+        time: String,
+        days: Option<u32>,
+        hour: Option<u32>,
+        minute: Option<u32>,
+        recur: String,
+    },
+    Weather { city: String },
+    News { kind: String },
+    Poetry { query: String },
+    Radio { query: String },
+    None,
+}
+
+fn clip_field(s: &str, n: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() > n {
+        t.chars().take(n).collect()
+    } else {
+        t.to_string()
+    }
+}
+
+// ---------- 规则层:校验与换算 ----------
+
+fn valid_recur(r: &str) -> bool {
+    r.is_empty()
+        || r == "daily"
+        || (r.starts_with("weekly:") && r[7..].parse::<u32>().map(|x| x <= 6).unwrap_or(false))
+        || (r.starts_with("monthly:") && r[8..].parse::<u32>().map(|x| (1..=31).contains(&x)).unwrap_or(false))
+}
+
+/// 数字规格 → 具体时刻(纯算术;全部校验;返回 (时刻, recur))
+pub fn spec_to_when(
+    days: u32,
+    hour: u32,
+    minute: u32,
+    recur: &str,
+    now: NaiveDateTime,
+) -> Option<(NaiveDateTime, Option<String>)> {
+    if days > 60 || hour > 23 || minute > 59 || !valid_recur(recur) {
+        return None;
+    }
+    let at = |base: chrono::NaiveDate| base.and_hms_opt(hour, minute, 0);
+    match recur {
+        "" => {
+            let mut dt = at(now.date() + Duration::days(days as i64))?;
+            if dt <= now {
+                dt += Duration::days(1); // 已过 → 顺延一天(单次提醒不落过去)
+            }
+            Some((dt, None))
+        }
+        "daily" => {
+            let mut dt = at(now.date())?;
+            if dt <= now {
+                dt += Duration::days(1);
+            }
+            Some((dt, Some("daily".into())))
+        }
+        r if r.starts_with("weekly:") => {
+            let wd: u32 = r[7..].parse().ok()?;
+            let target = now.date()
+                + Duration::days((wd as i64 - now.weekday().num_days_from_monday() as i64).rem_euclid(7));
+            let mut dt = at(target)?;
+            if dt <= now {
+                dt += Duration::days(7);
+            }
+            Some((dt, Some(format!("weekly:{wd}"))))
+        }
+        r if r.starts_with("monthly:") => {
+            let day: u32 = r[8..].parse().ok()?;
+            if !(1..=31).contains(&day) {
+                return None;
+            }
+            let mut y = now.year();
+            let mut m = now.month();
+            loop {
+                if let Some(d) = chrono::NaiveDate::from_ymd_opt(y, m, day) {
+                    if let Some(dt) = d.and_hms_opt(hour, minute, 0) {
+                        if dt > now {
+                            return Some((dt, Some(format!("monthly:{day}"))));
+                        }
+                    }
+                }
+                m += 1;
+                if m > 12 {
+                    m = 1;
+                    y += 1;
+                }
+                if (y, m) > (now.year() + 2, now.month()) {
+                    return None;
+                }
+            }
+        }
+        _ => None,
+    }
 }
 
 // ---------- 草稿与追问 ----------
@@ -90,46 +332,61 @@ fn draft_reply(text: &str, when: &NaiveDateTime, recur: Option<&str>) -> String 
     )
 }
 
-pub(crate) fn store_clarify_reminder(core: &Assistant, event: &str) {
+pub(crate) fn store_clarify_reminder(
+    core: &Assistant,
+    event: &str,
+    days: Option<u32>,
+    recur: &str,
+) {
     if let Ok(mut g) = core.clarify.lock() {
         *g = Some(ClarifyState {
             route: "reminder".into(),
             payload: event.to_string(),
             round: 1,
+            days,
+            recur: recur.to_string(),
         });
     }
 }
 
-/// 分割结果 → 规则解析时间 → 草稿或依次追问(模型的唯一消费路径)
-fn reminder_via_segment(core: &Assistant, seg: &Segmentation, now: NaiveDateTime) -> String {
-    // 两槽全空:没有可执行内容
-    if seg.event.is_empty() && seg.time.is_empty() {
-        return USAGE.to_string();
-    }
-    // 时刻在词表里 → 直接出草稿
-    if !seg.time.is_empty() {
-        if let Some(parsed) = parse_when(&seg.time, now) {
-            let text = if seg.event.is_empty() { "到时间啦" } else { seg.event.as_str() };
+/// 分割/规格 → 草稿或依次追问(模型数字的唯一消费路径;全部经规则校验)
+fn reminder_via_spec(
+    core: &Assistant,
+    event: &str,
+    days: Option<u32>,
+    hour: Option<u32>,
+    minute: Option<u32>,
+    recur: &str,
+    now: NaiveDateTime,
+) -> String {
+    let event_t = event.trim();
+    // 规则层校验:天数/时刻越界 → 无效
+    let days_v = days.filter(|d| (0..=60).contains(d));
+    let hour_v = hour.filter(|h| (0..=23).contains(h));
+    let min_v = minute.filter(|m| (0..=59).contains(m));
+    let recur_v = if valid_recur(recur) { recur.to_string() } else { String::new() };
+
+    // 时刻齐了 → 直接出草稿(存 pending 待确认)
+    if let (Some(d), Some(h), Some(mi)) = (days_v, hour_v, min_v) {
+        if let Some((when, recur_v)) = spec_to_when(d, h, mi, &recur_v, now) {
             if let Ok(mut g) = core.pending.lock() {
                 *g = Some(PendingReminder {
-                    text: text.to_string(),
-                    when: parsed.when,
-                    recur: parsed.recur.clone(),
+                    text: event_t.to_string(),
+                    when,
+                    recur: recur_v.clone(),
                 });
             }
-            return draft_reply(text, &parsed.when, parsed.recur.as_deref());
+            return draft_reply(event_t, &when, recur_v.as_deref());
         }
     }
-    // 缺时刻(或时刻不在词表):记下事项,依次追问时间(纯规则,模型不再参与)
-    let event = if seg.event.is_empty() { seg.time.as_str() } else { seg.event.as_str() };
-    store_clarify_reminder(core, event);
-    if seg.time.is_empty() {
+
+    // 缺槽 → 依次追问(纯规则;模型不再参与第二轮)
+    let event = if event_t.is_empty() { "这件事" } else { event_t };
+    store_clarify_reminder(core, event, days_v, &recur_v);
+    if hour.is_none() {
         format!("⏳ 想「{event}」——什么时候提醒你?\n直接回复如「明晚八点」「大后天下午三点」;回复「取消」放弃")
     } else {
-        format!(
-            "⏳ 收到,提醒你「{event}」,时间「{}」我没对上。\n直接回复具体时间,如「明晚八点」「大后天下午三点」;回复「取消」放弃",
-            seg.time
-        )
+        format!("⏳ 收到,提醒你「{event}」。\n补充相对天数,回复如「3天后」「下周一」;回复「取消」放弃")
     }
 }
 
@@ -139,7 +396,6 @@ pub fn fallback(core: &Assistant, utterance: &str, now: NaiveDateTime) -> String
     if !core.llm_enabled() {
         return USAGE.to_string();
     }
-    // 疑问句预闸门(作用域控制):提醒句式里的提问不进模型
     if looks_like_question(utterance) {
         return "🤔 这句话更像提问而不是设置提醒,为避免误会我没有处理。\n\
                 若确实是提醒,请换个不含疑问词的说法(发送「帮助」看示例)"
@@ -152,16 +408,15 @@ pub fn fallback(core: &Assistant, utterance: &str, now: NaiveDateTime) -> String
     let Some(seg) = parse_segment(&out) else {
         return "😅 这句话我没分割开,试试明确格式:\n提醒我 明天下午3点 交报告(发送「帮助」看示例)".to_string();
     };
-    reminder_via_segment(core, &seg, now)
+    reminder_via_spec(core, &seg.event, seg.days, seg.hour, seg.minute, &seg.recur, now)
 }
 
-// ---------- 追问状态机(纯规则第二阶段;模型不参与时刻换算) ----------
+// ---------- 追问状态机(规则优先;未命中用模型数字转换) ----------
 
 pub(crate) fn clarify_active(core: &Assistant) -> bool {
     core.clarify.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// 判断是否是“切换话题”的普通指令(是→恢复追问状态,让正常分派处理)
 fn looks_like_command(t: &str) -> bool {
     const P: [&str; 12] = [
         "天气", "新闻", "国际", "科技", "时政", "诗词", "电台", "早报", "帮助", "设置城市",
@@ -170,8 +425,6 @@ fn looks_like_command(t: &str) -> bool {
     P.iter().any(|p| t.starts_with(p)) || t == "时间" || t == "帮助"
 }
 
-/// 有未完成追问时,对每条用户输入先行处理。
-/// 返回 Some(回复文案)=本条已消费;None=用户切换了话题,恢复正常分派。
 pub fn handle_clarify(core: &Assistant, input: &str, now: NaiveDateTime) -> Option<String> {
     let state = core.clarify.lock().ok()?.take()?;
 
@@ -192,7 +445,7 @@ pub fn handle_clarify(core: &Assistant, input: &str, now: NaiveDateTime) -> Opti
     }
 
     match state.route.as_str() {
-        // 提醒路由:规则优先解析补充的时间(确定性);不认识 → 继续追问(≤2轮)
+        // 提醒路由:规则优先(词表:明天/大后天/每周X/…)→ 未命中才用模型数字转换 → 仍无效 → 继续追问
         "reminder" => {
             if let Some(parsed) = parse_when(input, now) {
                 if let Ok(mut g) = core.pending.lock() {
@@ -208,6 +461,28 @@ pub fn handle_clarify(core: &Assistant, input: &str, now: NaiveDateTime) -> Opti
                     parsed.recur.as_deref(),
                 ));
             }
+            // 模型转换补充时间(语义→数字;规则校验)
+            if core.llm_ready() {
+                let raw = core.infer(&build_reply_spec_prompt(input));
+                if let Some(spec) = parse_reply_spec(&raw) {
+                    if let (Some(d), Some(h), Some(mi)) = (
+                        spec.days,
+                        spec.hour,
+                        spec.minute.filter(|m| (0..=59).contains(m)),
+                    ) {
+                        if let Some((when, recur_v)) = spec_to_when(d, h, mi, &spec.recur, now) {
+                            if let Ok(mut g) = core.pending.lock() {
+                                *g = Some(PendingReminder {
+                                    text: state.payload.clone(),
+                                    when,
+                                    recur: recur_v.clone(),
+                                });
+                            }
+                            return Some(draft_reply(&state.payload, &when, recur_v.as_deref()));
+                        }
+                    }
+                }
+            }
             if state.round >= 2 {
                 return Some(
                     "😅 两轮没对上时间。建议用明确格式:\n「明天下午3点 交报告」或右上角表单新建"
@@ -219,6 +494,8 @@ pub fn handle_clarify(core: &Assistant, input: &str, now: NaiveDateTime) -> Opti
                     route: "reminder".into(),
                     payload: state.payload.clone(),
                     round: state.round + 1,
+                    days: state.days,
+                    recur: state.recur.clone(),
                 });
             }
             Some("⏳ 时间没对上。直接回复具体时间,如「明天下午3点」「大后天上午10点」;回复「取消」放弃".to_string())
@@ -238,82 +515,9 @@ pub fn handle_clarify(core: &Assistant, input: &str, now: NaiveDateTime) -> Opti
     }
 }
 
-// ---------- 宽兜底(全句路由;reminder 走分割) ----------
+// ---------- 宽兜底(全句路由;reminder 走分割+规格) ----------
 
 /// 路由解析结果(参数均已裁剪)
-pub enum WideRoute {
-    /// 提醒:事项 + 时间短语(原样,交规则换算)
-    Reminder { event: String, time: String },
-    /// 天气(city 可为空 → 追问)
-    Weather { city: String },
-    /// 新闻(all/intl/tech/politics)
-    News { kind: String },
-    /// 诗词
-    Poetry { query: String },
-    /// 电台(query 可空 → 精选台)
-    Radio { query: String },
-    /// 与能力无关
-    None,
-}
-
-pub fn build_wide_prompt(utterance: &str) -> String {
-    format!(
-        "你是个人助手路由器。判断用户这句话想使用哪个功能,输出一行JSON,只输出JSON本身:\n\
-         {{\"route\":\"reminder\",\"event\":\"把报告写完\",\"time\":\"下周末前\"}}\n\
-         {{\"route\":\"weather\",\"city\":\"北京\"}}\n\
-         {{\"route\":\"news\",\"kind\":\"all\"}}\n\
-         {{\"route\":\"poetry\",\"query\":\"励志\"}}\n\
-         {{\"route\":\"radio\",\"query\":\"爵士\"}}\n\
-         {{\"route\":\"none\"}}\n\
-         规则:\n\
-         - reminder:要求在未来某时间做某事;event=要做什么(去掉时间词);time=什么时候(保留原词,不要换算成数字);没有时间就 time 为空串;\n\
-         - weather/news/poetry/radio:query 填关键词;\n\
-         - 与以上功能都无关(聊天/提问/其他)→ {{\"route\":\"none\"}};\n\
-         句子:{utterance}\nJSON:"
-    )
-}
-
-fn clip_field(s: &str, n: usize) -> String {
-    let t = s.trim();
-    if t.chars().count() > n {
-        t.chars().take(n).collect()
-    } else {
-        t.to_string()
-    }
-}
-
-/// 解析宽兜底路由输出(字段裁剪)
-pub fn parse_wide(out: &str) -> Result<WideRoute, String> {
-    let start = out.find('{').ok_or("输出里没有JSON")?;
-    let end = out.rfind('}').ok_or("输出里没有JSON")?;
-    if end < start {
-        return Err("输出里没有JSON".into());
-    }
-    let v: Value = serde_json::from_str(&out[start..=end]).map_err(|e| format!("JSON非法:{e}"))?;
-    let route = v["route"].as_str().ok_or("缺少route")?;
-    let field = |k: &str| -> String { clip_field(v[k].as_str().unwrap_or(""), 40) };
-    Ok(match route {
-        "reminder" => WideRoute::Reminder {
-            event: {
-                let e = field("event");
-                if e.is_empty() { field("text") } else { e }
-            },
-            time: field("time"),
-        },
-        "weather" => WideRoute::Weather { city: field("city") },
-        "news" => {
-            let k = field("kind");
-            WideRoute::News {
-                kind: if matches!(k.as_str(), "intl" | "tech" | "politics") { k } else { "all".to_string() },
-            }
-        }
-        "poetry" => WideRoute::Poetry { query: field("query") },
-        "radio" => WideRoute::Radio { query: field("query") },
-        "none" => WideRoute::None,
-        other => return Err(format!("未知route:{other}")),
-    })
-}
-
 pub(crate) fn wide_enabled(core: &Assistant) -> bool {
     core.llm_enabled()
         && core
@@ -324,12 +528,11 @@ pub(crate) fn wide_enabled(core: &Assistant) -> bool {
             .unwrap_or(false)
 }
 
-/// 宽兜底:全句路由;reminder 走分割→规则换算→依次确认
+/// 宽兜底:全句路由;reminder 走分割→规格→规则校验→依次确认
 pub fn try_wide(core: &Assistant, utterance: &str, now: NaiveDateTime) -> Option<String> {
     if !core.llm_enabled() || !wide_enabled(core) {
         return None;
     }
-    // 疑问句不再拦截:路由器自行判断(如「明天北京天气怎么样」应路由 weather)
     if !core.llm_ready() {
         return Some(
             "🧩 AI兜底(宽模式)已开启,但本地模型未就绪(可在「设置」页查看模型状态)。".to_string(),
@@ -339,9 +542,13 @@ pub fn try_wide(core: &Assistant, utterance: &str, now: NaiveDateTime) -> Option
     let parsed = parse_wide(&out).ok()?;
     match parsed {
         WideRoute::None => None,
-        WideRoute::Reminder { event, time } => Some(reminder_via_segment(
+        WideRoute::Reminder { event, time, days, hour, minute, recur } => Some(reminder_via_spec(
             core,
-            &Segmentation { event, time },
+            &event,
+            days,
+            hour,
+            minute,
+            &recur,
             now,
         )),
         WideRoute::Weather { city } => {
@@ -351,6 +558,8 @@ pub fn try_wide(core: &Assistant, utterance: &str, now: NaiveDateTime) -> Option
                         route: "weather".into(),
                         payload: String::new(),
                         round: 1,
+                        days: None,
+                        recur: String::new(),
                     });
                 }
                 Some("🌤 想查哪个城市的天气?直接回复城市名(如「上海」)".to_string())
@@ -396,64 +605,5 @@ pub fn try_wide(core: &Assistant, utterance: &str, now: NaiveDateTime) -> Option
                 })
             }
         }
-    }
-}
-
-// ---------- 测试 ----------
-
-#[cfg(test)]
-mod segment_tests {
-    use super::*;
-    use crate::api::LlmInfer;
-
-    /// 模拟模型:路由→reminder 分割;分割器→event/time
-    struct MockLlm;
-    impl LlmInfer for MockLlm {
-        fn infer(&self, prompt: String) -> String {
-            if prompt.contains("路由器") {
-                return r#"{"route":"reminder","event":"交周报","time":"周五18点"}"#.to_string();
-            }
-            if prompt.contains("分割器") {
-                // 返回词表不认识的时间,以覆盖「依次追问」路径
-                return r#"{"event":"交材料","time":"汇报会后"}"#.to_string();
-            }
-            String::new()
-        }
-    }
-
-    #[test]
-    fn 宽兜底分割后确认落库() {
-        let db = std::env::temp_dir().join(format!("lp_seg_{}.db", uuid::Uuid::new_v4()));
-        let core = Assistant::new(db.to_str().unwrap().to_string()).unwrap();
-        core.set_setting("llm_enabled".to_string(), "1".to_string()).unwrap();
-        core.set_setting("llm_mode".to_string(), "wide".to_string()).unwrap();
-        core.attach_llm(Box::new(MockLlm));
-
-        // 疑问句不再被宽模式拦截
-        let r1 = crate::intent::dispatch(&core, "帮我安排一下交周报的事?");
-        assert!(r1.contains("确认"), "分割后应出草稿: {r1}");
-        let r2 = crate::intent::dispatch(&core, "确认");
-        assert!(r2.contains("已设置"), "确认后落库: {r2}");
-        assert_eq!(core.list_reminders().unwrap().len(), 1);
-        let _ = std::fs::remove_file(&db);
-    }
-
-    #[test]
-    fn 窄兜底分割_缺时间依次追问() {
-        let db = std::env::temp_dir().join(format!("lp_seg2_{}.db", uuid::Uuid::new_v4()));
-        let core = Assistant::new(db.to_str().unwrap().to_string()).unwrap();
-        core.set_setting("llm_enabled".to_string(), "1".to_string()).unwrap();
-        core.attach_llm(Box::new(MockLlm));
-
-        // 规则不认识「汇报会后」→ 模型分割 → 时间词表不认识 → 依次追问(不再调模型)
-        let r1 = crate::intent::dispatch(&core, "提醒我汇报会后交材料");
-        assert!(r1.contains("时间"), "应追问时间: {r1}");
-        // 补充可解析时间 → 草稿
-        let r2 = crate::intent::dispatch(&core, "明天下午3点");
-        assert!(r2.contains("确认"), "补充后应出草稿: {r2}");
-        let r3 = crate::intent::dispatch(&core, "确认");
-        assert!(r3.contains("已设置"));
-        assert_eq!(core.list_reminders().unwrap()[0].text, "交材料");
-        let _ = std::fs::remove_file(&db);
     }
 }

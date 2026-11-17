@@ -316,7 +316,7 @@ fn add_reminder(core: &Assistant, body: &str) -> String {
                 return format!("⏳ {pfx}想提醒你什么?回复如「{pfx}8点 学校活动」");
             }
             if !crate::llm::looks_like_question(event) {
-                crate::llm::store_clarify_reminder(core, event);
+                crate::llm::store_clarify_reminder(core, event, None, "");
                 return format!(
                     "⏳ 好,{pfx}提醒你「{event}」。\n具体几点?直接回复如「晚上7点」;回复「取消」放弃"
                 );

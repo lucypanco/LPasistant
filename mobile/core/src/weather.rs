@@ -259,14 +259,28 @@ pub fn met_now(core: &Assistant, lat: f64, lon: f64) -> Result<MetNow, CoreError
 
 // ---------------- GFS 集合预报(未来24小时) ----------------
 
-/// 未来24小时变化(集合预报):最高/最低、前后半程中位温差(趋势)、降水成员占比
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+/// 未来24小时变化(集合预报):最高/最低、前后半程中位温差(趋势)、
+/// 逐小时聚合点(集合成员中位温度+湿占比)
+#[derive(Debug, Default, Clone)]
+pub struct HourStat {
+    pub median_temp: f64,
+    pub wet_frac: f64,
+    /// 当地时间「时」标签(如「14」;解析失败为空)
+    pub hour_label: String,
+}
+
+/// 逐小时降水成员占比(雨窗判断用)
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Forecast24 {
+    /// 各小时的当地时间「时」标签(用于雨窗播报)
+    pub hours: Vec<String>,
     pub hi: f64,
     pub lo: f64,
     /// 后半程中位温度 - 前半程中位温度(正=升温)
     pub trend: f64,
     pub precip_frac: f64,
+    /// 每小时降水成员占比(0.0-1.0;index 0 = 未来第1小时)
+    pub wet_by_hour: Vec<f64>,
 }
 
 fn median_of(mut v: Vec<f64>) -> f64 {
@@ -299,28 +313,65 @@ pub fn ensemble_24h(core: &Assistant, lat: f64, lon: f64) -> Result<Forecast24, 
     let temps = v["hourly"]["temperature_2m"].as_array().ok_or(err("集合数据异常"))?;
     let precs = v["hourly"]["precipitation"].as_array();
 
-    let t: Vec<f64> = temps.iter().filter_map(|x| x.as_f64()).collect();
-    if t.len() < 6 {
+    // 逐小时聚合:集合成员按小时分块(30成员/小时),取中位温度与湿占比
+    let times = v["hourly"]["time"]
+        .as_array()
+        .and_then(|a| {
+            let items: Vec<String> = a
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
+            (!items.is_empty()).then_some(items)
+        })
+        .unwrap_or_default();
+    let n_hours = if times.is_empty() { 24 } else { times.len() };
+    if temps.len() < n_hours || n_hours == 0 {
         return Err(err("集合成员为空"));
     }
+    let per = temps.len() / n_hours; // 每小时成员数
+    let temp_at = |h: usize| -> Vec<f64> {
+        temps[h * per..(h + 1) * per]
+            .iter()
+            .filter_map(|x| x.as_f64())
+            .collect()
+    };
+    let wet_frac_at = |h: usize| -> f64 {
+        match precs {
+            Some(p) if p.len() >= (h + 1) * per => {
+                let vals: Vec<f64> = p[h * per..(h + 1) * per].iter().filter_map(|x| x.as_f64()).collect();
+                if vals.is_empty() {
+                    0.0
+                } else {
+                    vals.iter().filter(|&&x| x > 0.1).count() as f64 / vals.len() as f64
+                }
+            }
+            _ => 0.0,
+        }
+    };
+
+    let points: Vec<HourStat> = (0..n_hours)
+        .map(|h| HourStat {
+            median_temp: median_of(temp_at(h)),
+            wet_frac: wet_frac_at(h),
+            hour_label: if h < times.len() {
+                times[h].get(11..13).unwrap_or("").to_string()
+            } else {
+                String::new()
+            },
+        })
+        .collect();
+
+    let t: Vec<f64> = points.iter().map(|p| p.median_temp).collect();
     let half = t.len() / 2;
     let trend = median_of(t[half..].to_vec()) - median_of(t[..half].to_vec());
-    let precip_frac = precs
-        .map(|p| {
-            let vals: Vec<f64> = p.iter().filter_map(|x| x.as_f64()).collect();
-            if vals.is_empty() {
-                0.0
-            } else {
-                let wet = vals.iter().filter(|&&x| x > 0.1).count();
-                wet as f64 / vals.len() as f64
-            }
-        })
-        .unwrap_or(0.0);
+    let precip_frac = points.iter().map(|p| p.wet_frac).sum::<f64>() / points.len() as f64;
     Ok(Forecast24 {
         hi: t.iter().cloned().fold(f64::MIN, f64::max),
         lo: t.iter().cloned().fold(f64::MAX, f64::min),
         trend,
         precip_frac,
+        wet_by_hour: points.iter().map(|p| p.wet_frac).collect(),
+        hours: points.iter().map(|p| p.hour_label.clone()).collect(),
     })
 }
 
@@ -376,16 +427,32 @@ pub fn broadcast_text(
         } else {
             "气温变化不大".to_string()
         };
-        let pct = f.precip_frac * 100.0;
-        let rain = if f.precip_frac >= 0.6 {
-            format!("降水概率偏高({pct:.0}%)")
-        } else if f.precip_frac >= 0.3 {
-            format!("可能有降水({pct:.0}%)")
+        // 雨窗时段化:连续≥2小时降水成员≥40% 视为一个降雨时段
+        let mut wins: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < f.wet_by_hour.len() {
+            if f.wet_by_hour[i] >= 0.4 {
+                let s = i;
+                while i < f.wet_by_hour.len() && f.wet_by_hour[i] >= 0.4 {
+                    i += 1;
+                }
+                if i - s >= 2 {
+                    let s_lab = f.hours.get(s).cloned().unwrap_or_default();
+                    let e_lab = f.hours.get(i - 1).cloned().unwrap_or_default();
+                    let maxf = f.wet_by_hour[s..i].iter().cloned().fold(0.0, f64::max);
+                    wins.push(format!("{}时-{}时(成员约{:.0}%)", s_lab, e_lab, maxf * 100.0));
+                }
+            } else {
+                i += 1;
+            }
+        }
+        let rain = if wins.is_empty() {
+            "未来24小时各时段降水成员占比低,以晴到多云为主".to_string()
         } else {
-            format!("降水概率低({pct:.0}%)")
+            format!("降水时段:{};其余时段降水少", wins.join(";"))
         };
         lines.push(format!(
-            "未来24小时:最高{:.1}°C、最低{:.1}°C,{},{}。",
+            "未来24小时:最高{:.1}°C、最低{:.1}°C,{};{}。",
             f.hi, f.lo, trend_txt, rain
         ));
     }
@@ -498,7 +565,14 @@ mod tests {
 
     #[test]
     fn broadcast_text_shapes_sentences() {
-        let f = Forecast24 { hi: 29.0, lo: 21.0, trend: 2.5, precip_frac: 0.35 };
+        let f = Forecast24 {
+            hi: 29.0,
+            lo: 21.0,
+            trend: 2.5,
+            precip_frac: 0.35,
+            hours: vec!["14".to_string(), "15".to_string(), "16".to_string()],
+            wet_by_hour: vec![0.1, 0.6, 0.7],
+        };
         let out = broadcast_text(
             "北京",
             Some("晴,26°C,南风2级"),
@@ -512,8 +586,9 @@ mod tests {
         assert!(out.contains("湿度65%"));
         assert!(out.contains("今夜最低22°C。"));
         assert!(out.contains("未来24小时:最高29.0°C、最低21.0°C"));
-        assert!(out.contains("气温上升"));
-        assert!(out.contains("可能有降水(35%)"));
+        assert!(out.contains("气温上升约2°C"));
+        // 时段化雨窗:连续两小时湿占比≥0.4 → 「15时-16时」,最大占比 70%
+        assert!(out.contains("降水时段:15时-16时(成员约70%)"), "实际: {out}");
         assert!(out.contains("⚠️ 北京·暴雨"));
         assert!(out.ends_with("—— 数据:测试"));
     }

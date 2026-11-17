@@ -47,6 +47,37 @@ pub const STATIONS: &[Station] = &[
         desc: "西雅图独立/另类",
         region: "国际",
     },
+    // 二次元音乐(2026-11-15 radio-browser 实测可达;Gensokyo=东方Project,J1GOLD/Sakura=动画歌)
+    Station {
+        name: "二次元·Gensokyo",
+        url: "https://stream.gensokyoradio.net/3/",
+        desc: "东方Project同人·JP 256k",
+        region: "二次元",
+    },
+    Station {
+        name: "二次元·J1 GOLD",
+        url: "https://jenny.torontocast.com:2000/stream/J1GOLD",
+        desc: "J-Pop动画歌·CA 128k",
+        region: "二次元",
+    },
+    Station {
+        name: "二次元·SBS PopAsia",
+        url: "https://sbs-ice.streamguys1.com/sbs-popasia-sbs-web",
+        desc: "泛亚流行·AU 97k",
+        region: "二次元",
+    },
+    Station {
+        name: "二次元·J-Pop Sakura",
+        url: "https://quincy.torontocast.com:2070/stream.mp3",
+        desc: "亚洲DREAM动画歌·JP 128k",
+        region: "二次元",
+    },
+    Station {
+        name: "Anison动漫音乐台",
+        url: "http://pool.anison.fm:9000/AniSonFM%28320%29?",
+        desc: "中文动漫歌·CN 320k",
+        region: "二次元",
+    },
 ];
 
 /// 拥有所有权的台站(内置 + 用户自定义)

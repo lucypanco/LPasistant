@@ -349,13 +349,19 @@ fun SettingsScreen(
                     }
                 )
             }
-            // 定位状态提示:成功(城市)/未授权/无数据
-            if (geoEnabled && geoStatus.isNotBlank()) {
-                Text(
-                    geoStatus,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            // 定位状态提示:成功(城市)/未授权/无数据;可手动刷新
+            if (geoEnabled) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        geoStatus.ifBlank { "…" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    TextButton(onClick = { scope.launch { geoStatus = locateStatus(ctx) } }) {
+                        Text("刷新")
+                    }
+                }
             }
             HorizontalDivider()
 
