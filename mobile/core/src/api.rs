@@ -107,6 +107,44 @@ pub trait LlmInfer: Send + Sync {
     fn infer(&self, prompt: String) -> String;
 }
 
+/// 天气曲线卡单点(逐小时)
+#[derive(Debug, uniffi::Record)]
+pub struct WeatherChartPoint {
+    /// 当地「时」标签,如「14」
+    pub hour: String,
+    /// 集合成员中位温度 °C
+    pub temp: f64,
+    /// 降水成员占比 0.0-1.0
+    pub wet: f64,
+}
+
+/// 天气曲线卡:播报文本 + 24h 曲线点
+#[derive(Debug, uniffi::Record)]
+pub struct WeatherChart {
+    /// 播报全文(当前实况+24h 概述)
+    pub summary: String,
+    pub hi: f64,
+    pub lo: f64,
+    pub points: Vec<WeatherChartPoint>,
+}
+
+fn to_weather_chart(o: crate::weather::ChartOut) -> WeatherChart {
+    WeatherChart {
+        summary: o.summary,
+        hi: o.hi,
+        lo: o.lo,
+        points: o
+            .points
+            .into_iter()
+            .map(|p| WeatherChartPoint {
+                hour: p.hour_label,
+                temp: p.median_temp,
+                wet: p.wet_frac,
+            })
+            .collect(),
+    }
+}
+
 // ---------- 核心对象 ----------
 
 #[derive(uniffi::Object)]
@@ -225,6 +263,34 @@ impl Assistant {
         crate::weather::here(self, lat, lon)
     }
 
+    /// 天气曲线卡:city 空 = 自动定位(geo_enabled 开且能取到坐标),失败回退默认城市;
+    /// 非空 = 城市 geocoding(带缓存)。统一坐标方案(MET 实况 + GFS 集合曲线)。
+    pub fn weather_chart(&self, city: String) -> Result<WeatherChart, CoreError> {
+        let c = city.trim().to_string();
+        if c.is_empty() && self.geo_enabled() {
+            if let Some(coords) = self.current_coords() {
+                let mut it = coords.split(',');
+                if let (Some(lat), Some(lon)) = (it.next().and_then(|x| x.trim().parse::<f64>().ok()), it.next().and_then(|x| x.trim().parse::<f64>().ok())) {
+                    let out = crate::weather::chart(self, lat, lon, "我当前位置(自动定位)")?;
+                    return Ok(to_weather_chart(out));
+                }
+            }
+            // 定位不可得:走默认城市
+        }
+        let name = if c.is_empty() {
+            self.store
+                .lock()
+                .map_err(|_| CoreError::Failure { detail: "存储忙".into() })?
+                .kv_get("default_city")
+                .unwrap_or_else(|| crate::weather::default_city().to_string())
+        } else {
+            c
+        };
+        let loc = crate::weather::geocode(self, &name)?;
+        let out = crate::weather::chart(self, loc.lat, loc.lon, &loc.label)?;
+        Ok(to_weather_chart(out))
+    }
+
     // ---- 新闻(结构化:UI 渲染可点击行) ----
     /// kind: "all" | "intl" | "tech" | "politics"
     pub fn news_list(&self, kind: String, n: u32) -> Result<Vec<NewsItemRecord>, CoreError> {
@@ -255,6 +321,86 @@ impl Assistant {
                 region: "内置".to_string(),
             })
             .collect()
+    }
+
+    // ---- 用户自定义源(电台/新闻;保存即自检,勾选控制参与) ----
+
+    pub fn radio_user_list(&self) -> Vec<crate::sources::UserStation> {
+        crate::sources::load_stations(self)
+    }
+
+    pub fn radio_user_add(&self, name: String, url: String) -> crate::sources::UserStation {
+        let (ok, err) = crate::sources::probe_radio(self, &url);
+        let mut list = crate::sources::load_stations(self);
+        list.retain(|s| s.url != url);
+        if list.len() >= 20 {
+            list.remove(0);
+        }
+        let st = crate::sources::UserStation {
+            name: name.trim().to_string(),
+            url: url.trim().to_string(),
+            enabled: true,
+            ok: Some(ok),
+            err,
+        };
+        list.push(st.clone());
+        crate::sources::save_stations(self, &list);
+        st
+    }
+
+    pub fn radio_user_set_enabled(&self, url: String, enabled: bool) {
+        let mut list = crate::sources::load_stations(self);
+        for s in list.iter_mut() {
+            if s.url == url {
+                s.enabled = enabled;
+            }
+        }
+        crate::sources::save_stations(self, &list);
+    }
+
+    pub fn radio_user_remove(&self, url: String) {
+        let mut list = crate::sources::load_stations(self);
+        list.retain(|s| s.url != url);
+        crate::sources::save_stations(self, &list);
+    }
+
+    pub fn news_user_list(&self) -> Vec<crate::sources::UserFeed> {
+        crate::sources::load_feeds(self)
+    }
+
+    pub fn news_user_add(&self, url: String) -> crate::sources::UserFeed {
+        let (ok, title, err) = crate::sources::probe_news(self, &url);
+        let mut list = crate::sources::load_feeds(self);
+        list.retain(|f| f.url != url);
+        if list.len() >= 8 {
+            list.remove(0);
+        }
+        let fd = crate::sources::UserFeed {
+            url: url.trim().to_string(),
+            enabled: true,
+            ok: Some(ok),
+            err,
+            title: title.trim().chars().take(60).collect(),
+        };
+        list.push(fd.clone());
+        crate::sources::save_feeds(self, &list);
+        fd
+    }
+
+    pub fn news_user_set_enabled(&self, url: String, enabled: bool) {
+        let mut list = crate::sources::load_feeds(self);
+        for f in list.iter_mut() {
+            if f.url == url {
+                f.enabled = enabled;
+            }
+        }
+        crate::sources::save_feeds(self, &list);
+    }
+
+    pub fn news_user_remove(&self, url: String) {
+        let mut list = crate::sources::load_feeds(self);
+        list.retain(|f| f.url != url);
+        crate::sources::save_feeds(self, &list);
     }
 
     pub fn radio_search(&self, query: String, n: u32) -> Result<Vec<RadioStationRecord>, CoreError> {

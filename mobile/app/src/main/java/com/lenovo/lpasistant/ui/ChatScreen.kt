@@ -29,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -46,6 +47,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -68,9 +70,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.lpasistant_core.NewsItemRecord
 import uniffi.lpasistant_core.RadioStationRecord
+import uniffi.lpasistant_core.WeatherChart
 import uniffi.lpasistant_core.ReminderDraft
 
-private const val WELCOME = """LPasistant(纯规则·不连AI)
+// internal:MainActivity 提升消息列表时也要构造欢迎语与自增 id
+internal const val WELCOME = """LPasistant(纯规则·不连AI)
 点上方快捷词条或直接输入指令;
 长按任意消息可复制;完整帮助在右上角「设置 → 使用帮助」"""
 
@@ -84,11 +88,13 @@ data class ChatMsg(
     /** 非 null 时渲染为新闻卡片(点标题抓详情) */
     val news: List<NewsItemRecord>? = null,
     /** 非 null 时渲染为电台卡片(点 ▶ 播放) */
-    val radio: List<RadioStationRecord>? = null
+    val radio: List<RadioStationRecord>? = null,
+    /** 非 null 时渲染为天气曲线卡(播报文本+24h 温度折线) */
+    val weather: WeatherChart? = null
 )
 
-private var msgSeq = 0L
-private fun nextMsgId() = ++msgSeq
+internal var msgSeq = 0L
+internal fun nextMsgId() = ++msgSeq
 
 private val QUICK_CHIPS = listOf(
     "提醒我",
@@ -99,6 +105,7 @@ private val QUICK_CHIPS = listOf(
     "诗词",
     "喝水提醒",
     "工作提醒",
+    "清空",
 )
 
 @Composable
@@ -106,12 +113,14 @@ fun ChatScreen(
     onOpenSettings: () -> Unit,
     onOpenReminders: () -> Unit,
     onOpenHelp: () -> Unit,
+    // 消息列表由 MainActivity 持有:导航去设置/提醒管理/帮助回来不清,
+    // 仅进程结束(用户手动结束或后台被系统回收)才随 Activity 重置
+    msgs: SnapshotStateList<ChatMsg>,
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val msgs = remember { mutableStateListOf(ChatMsg(nextMsgId(), false, WELCOME)) }
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -120,6 +129,8 @@ fun ChatScreen(
     // 长按菜单所属的消息 / 已进入“选择文本”模式的消息
     var menuMsgId by remember { mutableStateOf<Long?>(null) }
     var selectMsgId by remember { mutableStateOf<Long?>(null) }
+    // 「清空」确认弹窗
+    var showClear by remember { mutableStateOf(false) }
 
     fun append(text: String) = msgs.add(ChatMsg(nextMsgId(), false, text))
 
@@ -180,6 +191,18 @@ fun ChatScreen(
                 append("电台列表加载失败,稍后再试")
             } else {
                 msgs.add(ChatMsg(nextMsgId(), false, "", radio = list))
+            }
+        }
+    }
+
+    /** 天气曲线卡:播报文本 + 24h 温度折线;city 空 = 自动定位(设置开关),失败回退默认城市 */
+    fun showWeather(city: String = "") {
+        scope.launch {
+            val chart = withContext(Dispatchers.IO) { CoreBridge.weatherChart(city) }
+            if (chart == null) {
+                append("😅 天气获取失败,稍后再试")
+            } else {
+                msgs.add(ChatMsg(nextMsgId(), false, "", weather = chart))
             }
         }
     }
@@ -265,6 +288,7 @@ fun ChatScreen(
                 when {
                     m.news != null -> NewsCard(m.news, onDetail = ::onNewsDetail)
                     m.radio != null -> RadioCard(m.radio)
+                    m.weather != null -> WeatherCard(m.weather)
                     else -> Bubble(
                         m = m,
                         menuOpen = menuMsgId == m.id,
@@ -341,6 +365,8 @@ fun ChatScreen(
                                 "新闻" -> showNews("all")
                                 "国际" -> showNews("intl")
                                 "电台" -> showRadio()
+                                "天气" -> showWeather()
+                                "清空" -> showClear = true
                                 else -> send(label)
                             }
                         }
@@ -422,6 +448,25 @@ fun ChatScreen(
                         CoreBridge.saveReminderDirect(context, text, epochSec, recur)
                     })
                 }
+            }
+        )
+    }
+
+    if (showClear) {
+        AlertDialog(
+            onDismissRequest = { showClear = false },
+            title = { Text("清空聊天记录?") },
+            text = { Text("仅清空本页显示;已设置的提醒不受影响,到点仍会响。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClear = false
+                    msgs.clear()
+                    msgs.add(ChatMsg(nextMsgId(), false, WELCOME))
+                    Toast.makeText(context, "已清空", Toast.LENGTH_SHORT).show()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClear = false }) { Text("取消") }
             }
         )
     }

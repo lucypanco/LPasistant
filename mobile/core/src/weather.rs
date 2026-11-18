@@ -270,7 +270,7 @@ pub struct HourStat {
 }
 
 /// 逐小时降水成员占比(雨窗判断用)
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone)]
 pub struct Forecast24 {
     /// 各小时的当地时间「时」标签(用于雨窗播报)
     pub hours: Vec<String>,
@@ -281,6 +281,8 @@ pub struct Forecast24 {
     pub precip_frac: f64,
     /// 每小时降水成员占比(0.0-1.0;index 0 = 未来第1小时)
     pub wet_by_hour: Vec<f64>,
+    /// 逐小时聚合点(温度曲线卡用;测试构造处默认空)
+    pub points: Vec<HourStat>,
 }
 
 fn median_of(mut v: Vec<f64>) -> f64 {
@@ -372,6 +374,7 @@ pub fn ensemble_24h(core: &Assistant, lat: f64, lon: f64) -> Result<Forecast24, 
         precip_frac,
         wet_by_hour: points.iter().map(|p| p.wet_frac).collect(),
         hours: points.iter().map(|p| p.hour_label.clone()).collect(),
+        points,
     })
 }
 
@@ -492,6 +495,47 @@ pub fn comprehensive(core: &Assistant, lat: f64, lon: f64, place: &str) -> Resul
 
 // ---------------- 城市天气(兼容旧入口) ----------------
 
+/// 天气曲线卡(结构化):播报文本 + 24h 逐小时(集合中位温度/湿占比)。
+/// 坐标方案统一(MET 实况 + GFS 集合),不区分内置城市/地理编码城市。
+pub struct ChartOut {
+    pub summary: String,
+    pub hi: f64,
+    pub lo: f64,
+    pub points: Vec<HourStat>,
+}
+
+pub fn chart(core: &Assistant, lat: f64, lon: f64, place: &str) -> Result<ChartOut, CoreError> {
+    let core_ref = &*core;
+    let (met_res, ens_res) = std::thread::scope(|s| {
+        let a = s.spawn(|| met_now(core_ref, lat, lon).ok());
+        let b = s.spawn(|| ensemble_24h(core_ref, lat, lon));
+        (
+            a.join().unwrap_or(None),
+            b.join().unwrap_or_else(|_| Err(err("线程失败"))),
+        )
+    });
+    let f24 = ens_res?;
+    let now_desc = met_res
+        .as_ref()
+        .map(|m| format!("{:.1}°C,{}风{}级", m.temp, wind_dir(m.wind_dir), wind_level(m.wind_speed)));
+    let humidity = met_res.as_ref().map(|m| m.humidity as u32);
+    let summary = broadcast_text(
+        place,
+        now_desc.as_deref(),
+        humidity,
+        None,
+        Some(f24.clone()),
+        &[],
+        "数据:挪威气象局·GFS集合预报(按坐标就地计算)",
+    );
+    Ok(ChartOut {
+        summary,
+        hi: f24.hi,
+        lo: f24.lo,
+        points: f24.points,
+    })
+}
+
 /// 城市天气(兼容旧入口)
 /// 成功 → 缓存最近一份;失败(离线)→ 回退缓存并标注保存时间
 pub fn get_weather(core: &Assistant, city: &str) -> Result<String, CoreError> {
@@ -572,6 +616,7 @@ mod tests {
             precip_frac: 0.35,
             hours: vec!["14".to_string(), "15".to_string(), "16".to_string()],
             wet_by_hour: vec![0.1, 0.6, 0.7],
+            points: Vec::new(),
         };
         let out = broadcast_text(
             "北京",

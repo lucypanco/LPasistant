@@ -1,6 +1,7 @@
 package com.lenovo.lpasistant.core
 
 import android.content.Context
+import android.util.Log
 import com.lenovo.lpasistant.sys.Reminders
 import uniffi.lpasistant_core.Assistant
 import uniffi.lpasistant_core.FireOutcome
@@ -8,6 +9,7 @@ import uniffi.lpasistant_core.NewsItemRecord
 import uniffi.lpasistant_core.RadioStationRecord
 import uniffi.lpasistant_core.ReminderDraft
 import uniffi.lpasistant_core.ReminderRecord
+import uniffi.lpasistant_core.WeatherChart
 
 /**
  * Kotlin ↔ Rust 核心的唯一入口。
@@ -16,6 +18,8 @@ import uniffi.lpasistant_core.ReminderRecord
  * 绑定类 uniffi.lpasistant_core.* 由 `uniffi-bindgen generate` 生成(见 mobile/BUILD.md)。
  */
 object CoreBridge {
+
+    private const val TAG = "CoreBridge"
 
     @Volatile
     private var core: Assistant? = null
@@ -103,6 +107,13 @@ object CoreBridge {
         emptyList()
     }
 
+    /** 天气曲线卡(播报文本+24h 曲线点);city 空=自动定位(设置开关),失败回退默认城市 */
+    fun weatherChart(city: String): WeatherChart? = try {
+        c().weatherChart(city)
+    } catch (_: Exception) {
+        null
+    }
+
     /** 新闻详情:抓原文+提取正文;AI摘要由 Rust 侧按 AI兜底设置自动附加 */
     fun newsDetail(url: String, title: String): String = try {
         c().newsDetail(url, title)
@@ -136,6 +147,54 @@ object CoreBridge {
 
     fun fired(id: String): FireOutcome =
         try { c().reminderFired(id) } catch (_: Exception) { FireOutcome.Gone }
+
+    // ---- 用户自定义源(保存即自检,勾选控制参与)----
+
+    fun radioUserList(): List<uniffi.lpasistant_core.UserStation> = try {
+        c().radioUserList()
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    fun radioUserAdd(name: String, url: String): uniffi.lpasistant_core.UserStation? = try {
+        c().radioUserAdd(name, url)
+    } catch (e: Exception) {
+        Log.e(TAG, "radioUserAdd", e)
+        null
+    }
+
+    fun radioUserSetEnabled(url: String, enabled: Boolean) = try {
+        c().radioUserSetEnabled(url, enabled)
+    } catch (_: Exception) {
+    }
+
+    fun radioUserRemove(url: String) = try {
+        c().radioUserRemove(url)
+    } catch (_: Exception) {
+    }
+
+    fun newsUserList(): List<uniffi.lpasistant_core.UserFeed> = try {
+        c().newsUserList()
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    fun newsUserAdd(url: String): uniffi.lpasistant_core.UserFeed? = try {
+        c().newsUserAdd(url)
+    } catch (e: Exception) {
+        Log.e(TAG, "newsUserAdd", e)
+        null
+    }
+
+    fun newsUserSetEnabled(url: String, enabled: Boolean) = try {
+        c().newsUserSetEnabled(url, enabled)
+    } catch (_: Exception) {
+    }
+
+    fun newsUserRemove(url: String) = try {
+        c().newsUserRemove(url)
+    } catch (_: Exception) {
+    }
 
     fun digest(): String = try {
         c().composeDigest()

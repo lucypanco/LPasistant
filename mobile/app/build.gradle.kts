@@ -56,7 +56,9 @@ dependencies {
     // 本地 LLM 兜底:llama.cpp(NDK 静态编译,GGUF 直读;自建 JNI 桥,无第三方依赖)
     // 产物 libllama_jni.so 由 scripts/llama_jni_build.sh 编译并放入 jniLibs
     // 电台播放(Media3/ExoPlayer,HLS 与 Icecast 均支持)
+    // media3-session:MediaSessionService 常驻后台播放 + 系统通知栏媒体控件
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+    implementation("androidx.media3:media3-session:1.4.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
