@@ -353,6 +353,7 @@ pub(crate) fn store_clarify_reminder(
 fn reminder_via_spec(
     core: &Assistant,
     event: &str,
+    time_text: &str,
     days: Option<u32>,
     hour: Option<u32>,
     minute: Option<u32>,
@@ -360,6 +361,21 @@ fn reminder_via_spec(
     now: NaiveDateTime,
 ) -> String {
     let event_t = event.trim();
+    // 规则层优先:模型同时输出语义 time 文本(如「明天上午8点」)与数字槽,
+    // 0.5B 模型数字槽易错(实测 days=0/hour=0),time 文本走规则词表解析,
+    // 解析成功即以其为权威,数字槽仅作兜底。
+    if !time_text.trim().is_empty() {
+        if let Some(parsed) = crate::timeparse::parse_when(time_text.trim(), now) {
+            if let Ok(mut g) = core.pending.lock() {
+                *g = Some(PendingReminder {
+                    text: event_t.to_string(),
+                    when: parsed.when,
+                    recur: parsed.recur.clone(),
+                });
+            }
+            return draft_reply(event_t, &parsed.when, parsed.recur.as_deref());
+        }
+    }
     // 规则层校验:天数/时刻越界 → 无效
     let days_v = days.filter(|d| (0..=60).contains(d));
     let hour_v = hour.filter(|h| (0..=23).contains(h));
@@ -408,7 +424,7 @@ pub fn fallback(core: &Assistant, utterance: &str, now: NaiveDateTime) -> String
     let Some(seg) = parse_segment(&out) else {
         return "😅 这句话我没分割开,试试明确格式:\n提醒我 明天下午3点 交报告(发送「帮助」看示例)".to_string();
     };
-    reminder_via_spec(core, &seg.event, seg.days, seg.hour, seg.minute, &seg.recur, now)
+    reminder_via_spec(core, &seg.event, &seg.time, seg.days, seg.hour, seg.minute, &seg.recur, now)
 }
 
 // ---------- 追问状态机(规则优先;未命中用模型数字转换) ----------
@@ -545,6 +561,7 @@ pub fn try_wide(core: &Assistant, utterance: &str, now: NaiveDateTime) -> Option
         WideRoute::Reminder { event, time, days, hour, minute, recur } => Some(reminder_via_spec(
             core,
             &event,
+            &time,
             days,
             hour,
             minute,

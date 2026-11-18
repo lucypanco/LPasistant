@@ -24,10 +24,18 @@ static constexpr int N_CTX     = 2048;
 static constexpr int N_THREADS = 4;
 static constexpr int MAX_NEW_TOKENS = 128;
 
+// GGML/LLAMA 日志接 logcat(stderr 在 Android 不可见,abort 前的报错会丢)
+static void llama_log_to_logcat(ggml_log_level level, const char *text, void *) {
+    __android_log_print(level == GGML_LOG_LEVEL_ERROR ? ANDROID_LOG_ERROR : ANDROID_LOG_INFO,
+                        "LlamaCpp", "%s", text);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_lenovo_lpasistant_core_LlamaBridge_nativeInit(JNIEnv *env, jclass, jstring jpath) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_model) return JNI_TRUE;
+
+    llama_log_set(llama_log_to_logcat, nullptr);
 
     const char *path = env->GetStringUTFChars(jpath, nullptr);
 
@@ -39,8 +47,8 @@ Java_com_lenovo_lpasistant_core_LlamaBridge_nativeInit(JNIEnv *env, jclass, jstr
 
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx            = N_CTX;
-    cp.n_batch          = 256;
-    cp.n_ubatch         = 256;
+    cp.n_batch          = 512;
+    cp.n_ubatch         = 512;
     cp.n_threads        = N_THREADS;
     cp.n_threads_batch  = N_THREADS;
     cp.no_perf          = true;
@@ -95,11 +103,6 @@ Java_com_lenovo_lpasistant_core_LlamaBridge_nativeInfer(JNIEnv *env, jclass, jst
     }
     LOGI("tokenize %d token", n_prompt);
     if ((int)tokens.size() > N_CTX - MAX_NEW_TOKENS - 8) {
-        size_t keep = (size_t)(N_CTX - MAX_NEW_TOKENS - 8);
-        tokens.assign(tokens.end() - (long)keep, tokens.end());
-        n_prompt = (int)tokens.size();
-    }
-    if ((int)tokens.size() > N_CTX - MAX_NEW_TOKENS - 8) {
         // 超长截断:保留末尾(指令在尾部)
         size_t keep = (size_t)(N_CTX - MAX_NEW_TOKENS - 8);
         tokens.assign(tokens.end() - (long)keep, tokens.end());
@@ -109,15 +112,27 @@ Java_com_lenovo_lpasistant_core_LlamaBridge_nativeInfer(JNIEnv *env, jclass, jst
     // 3) 每次推理清空 KV(无状态单回合)
     llama_memory_clear(llama_get_memory(g_ctx), true);
 
-    llama_batch batch = llama_batch_get_one(tokens.data(), n_prompt);
     llama_sampler_chain_params sp = llama_sampler_chain_default_params();
     llama_sampler *smpl = llama_sampler_chain_init(sp);
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
     std::string out;
     llama_token new_id = 0;
+    // prefill:按 N_BATCH(512)分片——新版 llama.cpp 的 decode 不自动分片,
+    // one-shot batch 超过 n_batch 会 GGML_ASSERT(n_tokens_all <= n_batch) abort
     LOGI("prefill %d token 开始", n_prompt);
+    for (int pos = 0; pos < n_prompt; pos += 512) {
+        int n_chunk = std::min(512, n_prompt - pos);
+        llama_batch batch = llama_batch_get_one(tokens.data() + pos, n_chunk);
+        if (llama_decode(g_ctx, batch) != 0) {
+            LOGE("decode 失败 @prefill pos=%d", pos);
+            llama_sampler_free(smpl);
+            return env->NewStringUTF("");
+        }
+    }
+    // 生成:每次 1 token
     for (int i = 0; i < MAX_NEW_TOKENS; i++) {
+        llama_batch batch = llama_batch_get_one(&new_id, 1);
         if (llama_decode(g_ctx, batch) != 0) { LOGE("decode 失败 @%d", i); break; }
         new_id = llama_sampler_sample(smpl, g_ctx, -1);
         if (i == 0) LOGI("首 token=%d", new_id);
@@ -125,7 +140,6 @@ Java_com_lenovo_lpasistant_core_LlamaBridge_nativeInfer(JNIEnv *env, jclass, jst
         char piece[256];
         int n = llama_token_to_piece(g_vocab, new_id, piece, sizeof(piece), 0, false);
         if (n > 0) out.append(piece, (size_t)n);
-        batch = llama_batch_get_one(&new_id, 1);
     }
     LOGI("生成结束,输出 %d 字符", (int)out.size());
     llama_sampler_free(smpl);
