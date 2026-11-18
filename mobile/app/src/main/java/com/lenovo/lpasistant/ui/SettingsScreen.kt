@@ -2,8 +2,11 @@ package com.lenovo.lpasistant.ui
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Geocoder
+import android.location.LocationManager
+import android.provider.Settings as AndroidSettings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -39,6 +43,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,6 +62,7 @@ import com.lenovo.lpasistant.R
 import com.lenovo.lpasistant.core.CoreBridge
 import com.lenovo.lpasistant.core.LlmController
 import com.lenovo.lpasistant.core.LocationProviderImpl
+import com.lenovo.lpasistant.core.RadioController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,8 +86,13 @@ fun SettingsScreen(
     var geoStatus by remember { mutableStateOf("") }
     var waterTimes by remember { mutableStateOf("10:00,16:00") }
     var workTimes by remember { mutableStateOf("09:00,18:00") }
-    var newsFeeds by remember { mutableStateOf("") }
-    var radioFeeds by remember { mutableStateOf("") }
+    val newsList = remember { mutableStateListOf<uniffi.lpasistant_core.UserFeed>() }
+    val radioList = remember { mutableStateListOf<uniffi.lpasistant_core.UserStation>() }
+    var newsUrl by remember { mutableStateOf("") }
+    var newsProbe by remember { mutableStateOf("") }
+    var radioName by remember { mutableStateOf("") }
+    var radioUrl by remember { mutableStateOf("") }
+    var radioProbe by remember { mutableStateOf("") }
     val context = LocalContext.current
     var city by remember { mutableStateOf("北京") }
     var modelStatus by remember { mutableStateOf("…") }
@@ -97,8 +108,8 @@ fun SettingsScreen(
             reminderCount = CoreBridge.reminders().size
             waterTimes = CoreBridge.getSetting("tmpl_water").ifBlank { "10:00,16:00" }
             workTimes = CoreBridge.getSetting("tmpl_work").ifBlank { "09:00,18:00" }
-            newsFeeds = CoreBridge.getSetting("news_user_feeds")
-            radioFeeds = CoreBridge.getSetting("radio_user_stations")
+            newsList.clear(); newsList.addAll(CoreBridge.newsUserList())
+            radioList.clear(); radioList.addAll(CoreBridge.radioUserList())
             if (geoEnabled) geoStatus = locateStatus(ctx)
         }
     }
@@ -358,7 +369,21 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    TextButton(onClick = { scope.launch { geoStatus = locateStatus(ctx) } }) {
+                    if (geoStatus.contains("系统定位服务已关闭")) {
+                        TextButton(onClick = {
+                            try {
+                                ctx.startActivity(Intent(AndroidSettings.ACTION_LOCATION_SOURCE_SETTINGS))
+                            } catch (_: Exception) { }
+                        }) {
+                            Text("去开启")
+                        }
+                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            geoStatus = "⏳ 正在定位…"
+                            geoStatus = locateStatus(ctx, active = true)
+                        }
+                    }) {
                         Text("刷新")
                     }
                 }
@@ -400,38 +425,143 @@ fun SettingsScreen(
             )
             HorizontalDivider()
 
-            // ---- 新闻自定义源 ----
+            // ---- 新闻自定义源(添加即自检;勾选参与抓取)----
             Text("新闻自定义源", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(
-                value = newsFeeds,
-                onValueChange = { newsFeeds = it },
-                label = { Text("RSS 地址(每行一个,最多 5 个,与内置源合并抓取)") },
-                minLines = 2,
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
+            newsList.forEach { fd ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = fd.enabled, onCheckedChange = { en ->
+                        scope.launch {
+                            CoreBridge.newsUserSetEnabled(fd.url, en)
+                            newsList.clear(); newsList.addAll(CoreBridge.newsUserList())
+                        }
+                    })
+                    Column(Modifier.weight(1f)) {
+                        Text(fd.title.ifBlank { fd.url }, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                        Text(
+                            when (fd.ok) {
+                                true -> "✓ 已连通"
+                                false -> "✗ ${fd.err}"
+                                null -> "未测"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (fd.ok == true) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error
+                        )
+                    }
                     TextButton(onClick = {
-                        CoreBridge.setSetting("news_user_feeds", newsFeeds)
-                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
-                    }) { Text("保存") }
+                        scope.launch {
+                            CoreBridge.newsUserRemove(fd.url)
+                            newsList.clear(); newsList.addAll(CoreBridge.newsUserList())
+                        }
+                    }) { Text("删除") }
                 }
-            )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = newsUrl,
+                    onValueChange = { newsUrl = it },
+                    label = { Text("RSS 地址(最多 5 个)") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    if (newsUrl.isNotBlank()) {
+                        scope.launch {
+                            val fd = CoreBridge.newsUserAdd(newsUrl.trim())
+                            if (fd != null) {
+                                newsProbe = if (fd.ok == true) "✓ 已添加并连通" else "✗ ${fd.err}"
+                                newsUrl = ""
+                                newsList.clear(); newsList.addAll(CoreBridge.newsUserList())
+                            } else {
+                                newsProbe = "✗ 操作失败"
+                            }
+                        }
+                    }
+                }) { Text("添加") }
+            }
+            if (newsProbe.isNotBlank()) {
+                Text(
+                    newsProbe,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (newsProbe.startsWith("✓")) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                )
+            }
             HorizontalDivider()
 
-            // ---- 电台自定义源 ----
+            // ---- 电台自定义源(添加即自检;勾选参与列表;点▶试听)----
             Text("电台自定义源", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(
-                value = radioFeeds,
-                onValueChange = { radioFeeds = it },
-                label = { Text("每行「名称|流地址」(追加在内置台之后,最多 20 个)") },
-                minLines = 2,
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
+            radioList.forEach { st ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = st.enabled, onCheckedChange = { en ->
+                        scope.launch {
+                            CoreBridge.radioUserSetEnabled(st.url, en)
+                            radioList.clear(); radioList.addAll(CoreBridge.radioUserList())
+                        }
+                    })
+                    Column(Modifier.weight(1f)) {
+                        Text(st.name, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                        Text(
+                            when (st.ok) {
+                                true -> "✓ 已连通"
+                                false -> "✗ ${st.err}"
+                                null -> "未测"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (st.ok == true) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error
+                        )
+                    }
+                    IconButton(onClick = { RadioController.play(context, st.name, st.url) }) {
+                        Icon(painterResource(R.drawable.ic_play), contentDescription = "试听")
+                    }
                     TextButton(onClick = {
-                        CoreBridge.setSetting("radio_user_stations", radioFeeds)
-                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
-                    }) { Text("保存") }
+                        scope.launch {
+                            CoreBridge.radioUserRemove(st.url)
+                            radioList.clear(); radioList.addAll(CoreBridge.radioUserList())
+                        }
+                    }) { Text("删除") }
                 }
-            )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = radioName,
+                    onValueChange = { radioName = it },
+                    label = { Text("名称") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(6.dp))
+                OutlinedTextField(
+                    value = radioUrl,
+                    onValueChange = { radioUrl = it },
+                    label = { Text("流地址") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1.2f)
+                )
+                TextButton(onClick = {
+                    if (radioName.isNotBlank() && radioUrl.isNotBlank()) {
+                        scope.launch {
+                            val st = CoreBridge.radioUserAdd(radioName.trim(), radioUrl.trim())
+                            if (st != null) {
+                                radioProbe = if (st.ok == true) "✓ 已添加并连通" else "✗ ${st.err}"
+                                radioName = ""; radioUrl = ""
+                                radioList.clear(); radioList.addAll(CoreBridge.radioUserList())
+                            } else {
+                                radioProbe = "✗ 操作失败"
+                            }
+                        }
+                    }
+                }) { Text("添加") }
+            }
+            if (radioProbe.isNotBlank()) {
+                Text(
+                    radioProbe,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (radioProbe.startsWith("✓")) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                )
+            }
             HorizontalDivider()
 
             // ---- 天气默认城市 ----
@@ -455,8 +585,9 @@ fun SettingsScreen(
     }
 }
 
-/** 定位状态:未授权/无数据/成功+城市名(系统 Geocoder 反查,不发给第三方网站) */
-private suspend fun locateStatus(c: Context): String = withContext(Dispatchers.IO) {
+/** 定位状态:未授权/无数据/成功+城市名(系统 Geocoder 反查,不发给第三方网站)
+ *  active=true 时主动单发定位(点「刷新」);false 只读缓存位置,无缓存再补一次主动定位 */
+private suspend fun locateStatus(c: Context, active: Boolean = false): String = withContext(Dispatchers.IO) {
     try {
         val granted = ContextCompat.checkSelfPermission(
             c, Manifest.permission.ACCESS_FINE_LOCATION
@@ -464,9 +595,24 @@ private suspend fun locateStatus(c: Context): String = withContext(Dispatchers.I
             c, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
         if (!granted) return@withContext "✗ 尚未授予定位权限(开关打开后会弹授权)"
-        val coords = LocationProviderImpl(c).currentCoords()
+        // 系统定位总开关关闭时任何主动请求都拿不到位置(权限与开关是两回事)
+        val lm = c.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val anyOn = try {
+            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        } catch (_: Exception) { false }
+        if (!anyOn) {
+            return@withContext "✗ 系统定位服务已关闭;点「去开启」打开后再刷新,或手动设默认城市"
+        }
+        val impl = LocationProviderImpl(c)
+        var coords = impl.currentCoords()
+        if (active || coords.isNullOrBlank()) {
+            // 主动索取定位(单发,20s 超时);失败回退缓存位置
+            val fresh = impl.requestOnce(20000L)
+            if (fresh.isNotBlank()) coords = fresh
+        }
         if (coords.isNullOrBlank()) {
-            return@withContext "✗ 暂无最近位置数据(打开地图/导航类应用后再试)"
+            return@withContext "✗ 定位超时(室内 GPS 可能较慢);可在下方手动设默认城市"
         }
         val lat = coords.split(",").getOrNull(0)?.toDoubleOrNull()
         val lon = coords.split(",").getOrNull(1)?.toDoubleOrNull()
