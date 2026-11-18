@@ -224,19 +224,12 @@ fn interleave(a: Vec<NewsItem>, b: Vec<NewsItem>) -> Vec<NewsItem> {
 
 /// 用户自定义源(kv news_user_feeds,一行一个 URL,最多 5 个)
 fn user_feed_urls(core: &Assistant) -> Vec<String> {
-    core.store
-        .lock()
-        .ok()
-        .and_then(|s| s.kv_get("news_user_feeds"))
-        .map(|v| {
-            v.lines()
-                .map(str::trim)
-                .filter(|l| l.starts_with("https://") || l.starts_with("http://"))
-                .take(5)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::sources::load_feeds(core)
+        .into_iter()
+        .filter(|f| f.enabled)
+        .map(|f| f.url)
+        .take(8)
+        .collect()
 }
 
 /// 全部源 = 内置白名单 + 用户自定义(自定义源算国内综合类)

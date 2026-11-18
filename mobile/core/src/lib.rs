@@ -14,6 +14,7 @@ mod news;
 mod poetry;
 mod radio;
 mod simhash;
+mod sources;
 mod store;
 mod timeparse;
 mod weather;

@@ -97,24 +97,18 @@ pub fn all_stations(core: &Assistant) -> Vec<StationOwned> {
             desc: s.desc.to_string(),
         })
         .collect();
-    if let Ok(store) = core.store.lock() {
-        if let Some(kvs) = store.kv_get("radio_user_stations") {
-            for line in kvs.lines() {
-                let Some((name, url)) = line.split_once('|') else { continue };
-                let (name, url) = (name.trim(), url.trim());
-                if name.is_empty() || !url.starts_with("http") {
-                    continue;
-                }
-                if v.iter().any(|x| x.url == url) || v.len() >= 20 {
-                    continue;
-                }
-                v.push(StationOwned {
-                    name: name.to_string(),
-                    url: url.to_string(),
-                    desc: "自定义".to_string(),
-                });
-            }
+    for st in crate::sources::load_stations(core) {
+        if !st.enabled {
+            continue;
         }
+        if v.iter().any(|x| x.url == st.url) || v.len() >= 20 {
+            continue;
+        }
+        v.push(StationOwned {
+            name: st.name,
+            url: st.url,
+            desc: if st.ok.unwrap_or(false) { "自定义·已验证".to_string() } else { "自定义".to_string() },
+        });
     }
     v
 }
