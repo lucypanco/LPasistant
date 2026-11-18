@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -31,10 +32,13 @@ import androidx.core.content.ContextCompat
 import com.lenovo.lpasistant.core.CoreBridge
 import com.lenovo.lpasistant.sys.AlarmReceiver
 import com.lenovo.lpasistant.ui.AssistantTheme
+import com.lenovo.lpasistant.ui.ChatMsg
 import com.lenovo.lpasistant.ui.ChatScreen
 import com.lenovo.lpasistant.ui.HelpScreen
 import com.lenovo.lpasistant.ui.ReminderListScreen
 import com.lenovo.lpasistant.ui.SettingsScreen
+import com.lenovo.lpasistant.ui.WELCOME
+import com.lenovo.lpasistant.ui.nextMsgId
 
 class MainActivity : ComponentActivity() {
 
@@ -56,6 +60,9 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(CoreBridge.getSetting("theme_palette").ifBlank { "ink" })
             }
             var screen by remember { mutableStateOf("chat") }
+            // 聊天记录提升到 Activity 级:导航去设置/提醒管理/帮助回来不清,
+            // 进程结束(手动结束/后台被系统回收)Activity 重建时才重置为欢迎语
+            val chatMsgs = remember { mutableStateListOf(ChatMsg(nextMsgId(), false, WELCOME)) }
             AssistantTheme(themeMode, themePalette) {
                 // 根级 Surface:统一 LocalContentColor=onSurface(否则默认黑,暗色下图标/文字不可见)
                 Surface(
@@ -105,7 +112,8 @@ class MainActivity : ComponentActivity() {
                         else -> ChatScreen(
                             onOpenSettings = { screen = "settings" },
                             onOpenReminders = { screen = "reminders" },
-                            onOpenHelp = { screen = "help" }
+                            onOpenHelp = { screen = "help" },
+                            msgs = chatMsgs
                         )
                     }
                 }
