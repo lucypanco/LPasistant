@@ -72,12 +72,6 @@ pub const STATIONS: &[Station] = &[
         desc: "亚洲DREAM动画歌·JP 128k",
         region: "二次元",
     },
-    Station {
-        name: "Anison动漫音乐台",
-        url: "http://pool.anison.fm:9000/AniSonFM%28320%29?",
-        desc: "中文动漫歌·CN 320k",
-        region: "二次元",
-    },
 ];
 
 /// 拥有所有权的台站(内置 + 用户自定义)

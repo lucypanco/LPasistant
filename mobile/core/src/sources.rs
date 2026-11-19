@@ -118,6 +118,13 @@ pub fn save_feeds(core: &crate::api::Assistant, list: &[UserFeed]) {
 
 /// 电台流自检:GET 取响应头与首块,期望 2xx + 音频/流媒体特征
 pub fn probe_radio(core: &crate::api::Assistant, url: &str) -> (bool, String) {
+    // 平台默认拦截明文 http(ExoPlayer 同样受限):探针先行拒绝,「已连通」才真实可信
+    if !url.starts_with("https://") {
+        return (
+            false,
+            "http 明文流:Android 默认拦截播放,请改用 https 源".to_string(),
+        );
+    }
     let client = core.http.clone();
     let resp = match client
         .get(url)
@@ -148,6 +155,14 @@ pub fn probe_radio(core: &crate::api::Assistant, url: &str) -> (bool, String) {
 
 /// 新闻源自检:GET(限量 64KB),期望 XML/Feed 特征
 pub fn probe_news(core: &crate::api::Assistant, url: &str) -> (bool, String, String) {
+    // 与播放/抓取行为一致:明文 http 源直接提示(内置抓取不受限,但保持源质量提示)
+    if !url.starts_with("https://") {
+        return (
+            false,
+            String::new(),
+            "http 明文源:建议改用 https 以防内容被篡改".to_string(),
+        );
+    }
     let client = core.http.clone();
     let resp = match client
         .get(url)
