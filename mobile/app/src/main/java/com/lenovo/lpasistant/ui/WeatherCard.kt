@@ -2,17 +2,20 @@ package com.lenovo.lpasistant.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -30,8 +33,8 @@ import androidx.compose.ui.unit.sp
 import uniffi.lpasistant_core.WeatherChart
 
 /**
- * 天气曲线卡:播报文本 + 24 小时温度折线(主题色)。
- * 底部小柱 = 降水成员占比(≥40% 时加深,提示降水时段);设计语言:细线/黑白灰/主题点睛。
+ * 天气曲线卡:播报文本 + 24 小时温度折线(主题色)+ 每 3 小时采样表。
+ * 曲线下小柱 = 降水成员占比(≥40% 时加深,提示降水时段);设计语言:细线/黑白灰/主题点睛。
  */
 @Composable
 fun WeatherCard(chart: WeatherChart) {
@@ -51,6 +54,8 @@ fun WeatherCard(chart: WeatherChart) {
             )
             Spacer(Modifier.height(10.dp))
             TempCurve(chart)
+            Spacer(Modifier.height(10.dp))
+            ChartTable(chart)
         }
     }
 }
@@ -149,6 +154,44 @@ private fun TempCurve(chart: WeatherChart) {
                     topLeft = Offset((xAt(i) - 8.dp.toPx()).coerceAtLeast(0f), h - 12.dp.toPx()),
                     style = labelStyle
                 )
+            }
+        }
+    }
+}
+
+/** 逐 3 小时采样表:时刻 / 温度 / 降水概率;≥40% 降水概率用主题色提示 */
+@Composable
+private fun ChartTable(chart: WeatherChart) {
+    val pts = chart.points
+    if (pts.isEmpty()) return
+    val sampled = pts.filterIndexed { i, _ -> i % 3 == 0 }
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val valueColor = MaterialTheme.colorScheme.onSurface
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+            Text("时刻", style = MaterialTheme.typography.bodySmall, color = labelColor, modifier = Modifier.weight(1f))
+            Text("温度", style = MaterialTheme.typography.bodySmall, color = labelColor, modifier = Modifier.weight(1f))
+            Text("降水概率", style = MaterialTheme.typography.bodySmall, color = labelColor, modifier = Modifier.weight(1f))
+        }
+        HorizontalDivider(thickness = 0.5.dp, color = labelColor.copy(alpha = 0.25f))
+        sampled.forEachIndexed { idx, p ->
+            val wet = (p.wet * 100).toInt()
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("${p.hour}时", style = MaterialTheme.typography.bodySmall, color = valueColor, modifier = Modifier.weight(1f))
+                Text("%.1f°C".format(p.temp), style = MaterialTheme.typography.bodySmall, color = valueColor, modifier = Modifier.weight(1f))
+                val wetText = if (p.wet >= 0.4) "$wet%·雨" else "$wet%"
+                Text(
+                    wetText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (p.wet >= 0.4) MaterialTheme.colorScheme.primary else valueColor,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (idx != sampled.lastIndex) {
+                HorizontalDivider(thickness = 0.5.dp, color = labelColor.copy(alpha = 0.12f))
             }
         }
     }
