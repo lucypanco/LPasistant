@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Gradle 构建 debug APK(在 WSL 内运行)
+# Gradle 构建 release APK(在 WSL 内运行)
 set -euo pipefail
+
+# 先重编 Rust 核心(教训:Rust 改动后只重新生成绑定会得到「新绑定+旧 .so」,
+# 启动即 UniFFI checksum 校验崩溃;构建前强制 crossbuild 保证版本一致)
+echo "== 同步 core 源码 =="
+rm -rf "$HOME/qqbot/core"
+cp -r /mnt/c/qq-bot/mobile/core "$HOME/qqbot/core"
+echo "== 交叉编译 liblpasistant_core.so =="
+bash /mnt/c/qq-bot/scripts/crossbuild.sh > /tmp/crossbuild.log 2>&1 || { tail -5 /tmp/crossbuild.log; exit 1; }
 
 echo "== 同步 mobile 工程到 WSL 原生目录 =="
 rm -rf "$HOME/qqbot/mobile"
