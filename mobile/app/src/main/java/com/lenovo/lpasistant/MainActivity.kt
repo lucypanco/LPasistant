@@ -45,6 +45,23 @@ class MainActivity : ComponentActivity() {
     private val notifPerm =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* 拒绝不影响聊天 */ }
 
+    /** 精确闹钟权限:33+ 由 USE_EXACT_ALARM 直接生效;31-32 未授予时引导一次(窗口闹钟会被 Doze 推迟) */
+    private fun ensureExactAlarm() {
+        if (Build.VERSION.SDK_INT < 31) return
+        val am = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+        if (am.canScheduleExactAlarms()) return
+        try {
+            startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                    .setData(android.net.Uri.parse("package:$packageName"))
+            )
+        } catch (_: Exception) {
+            try {
+                startActivity(android.content.Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+            } catch (_: Exception) { }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 边到边:系统条透明,背景即窗口底色 → 条框与主体同一条渐变时间线,无独立动画
@@ -52,6 +69,7 @@ class MainActivity : ComponentActivity() {
         CoreBridge.init(applicationContext)
         AlarmReceiver.ensureChannel(this)
         requestNotificationPermission()
+        ensureExactAlarm()
         setContent {
             var themeMode by remember {
                 mutableStateOf(CoreBridge.getSetting("theme_mode").ifBlank { "system" })
