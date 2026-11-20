@@ -62,6 +62,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 全屏意图权限(Android 14+ 默认可能拒绝):未授予时引导一次;拒绝也不影响铃声,只是不自动亮屏全屏 */
+    private fun ensureFullScreenIntent() {
+        if (Build.VERSION.SDK_INT < 34) return
+        val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (nm.canUseFullScreenIntent()) return
+        try {
+            startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+                    .setData(android.net.Uri.parse("package:$packageName"))
+            )
+        } catch (_: Exception) {
+            try {
+                startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT))
+            } catch (_: Exception) { }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 边到边:系统条透明,背景即窗口底色 → 条框与主体同一条渐变时间线,无独立动画
@@ -70,6 +87,7 @@ class MainActivity : ComponentActivity() {
         AlarmReceiver.ensureChannel(this)
         requestNotificationPermission()
         ensureExactAlarm()
+        ensureFullScreenIntent()
         setContent {
             var themeMode by remember {
                 mutableStateOf(CoreBridge.getSetting("theme_mode").ifBlank { "system" })

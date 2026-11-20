@@ -7,6 +7,8 @@
          31-32 仍用 SCHEDULE_EXACT_ALARM(onCreate 检测未授予则引导用户开启) -->
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 闹钟式提醒锁屏全屏:34+ 默认可能拒绝,onCreate 检测并引导;未授予时退回响铃+heads-up -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
