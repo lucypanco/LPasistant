@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -39,7 +41,7 @@ import java.util.Calendar
 fun ReminderFormDialog(
     prefill: ReminderDraft?,
     onDismiss: () -> Unit,
-    onSave: (text: String, epochSec: Long, recur: String) -> Unit
+    onSave: (text: String, epochSec: Long, recur: String, mode: String) -> Unit
 ) {
     val cal = Calendar.getInstance().apply {
         prefill?.let { timeInMillis = it.nextRun * 1000 }
@@ -50,6 +52,8 @@ fun ReminderFormDialog(
     var day by remember { mutableStateOf(cal.get(Calendar.DAY_OF_MONTH)) }
     var hour by remember { mutableStateOf(cal.get(Calendar.HOUR_OF_DAY)) }
     var minute by remember { mutableStateOf(cal.get(Calendar.MINUTE)) }
+    // 提醒方式:false=通知(高优提醒) true=闹钟(系统闹钟铃声+锁屏强提醒)
+    var alarm by remember { mutableStateOf(false) }
 
     val initialMode = when {
         prefill?.recur?.startsWith("weekly") == true -> "每周"
@@ -135,6 +139,23 @@ fun ReminderFormDialog(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
+                // 提醒方式:通知(高优提醒,不吵)/ 闹钟(系统闹钟铃声+锁屏强提醒+免打扰穿透)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("方式", style = MaterialTheme.typography.labelLarge)
+                    FilterChip(
+                        selected = !alarm,
+                        onClick = { alarm = false },
+                        label = { Text("通知") }
+                    )
+                    FilterChip(
+                        selected = alarm,
+                        onClick = { alarm = true },
+                        label = { Text("闹钟") }
+                    )
+                }
             }
         },
         confirmButton = {
@@ -146,7 +167,7 @@ fun ReminderFormDialog(
                     "每月" -> "monthly:$day"
                     else -> ""
                 }
-                onSave(text.ifBlank { "到时间啦" }, c2.timeInMillis / 1000, recur)
+                onSave(text.ifBlank { "到时间啦" }, c2.timeInMillis / 1000, recur, if (alarm) "alarm" else "notify")
             }) { Text("保存") }
         },
         dismissButton = {

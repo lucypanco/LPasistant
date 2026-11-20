@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import com.lenovo.lpasistant.R
 import com.lenovo.lpasistant.core.CoreBridge
 import com.lenovo.lpasistant.core.RadioController
+import com.lenovo.lpasistant.core.RadioUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -303,43 +304,27 @@ fun ChatScreen(
             }
         }
         HorizontalDivider()
-        // 迷你播放条(电台播放中显示,用辅助色点睛)
-        RadioController.nowPlaying?.let { name ->
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        painterResource(R.drawable.ic_headphones),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = { RadioController.stop() }) {
-                        Icon(
-                            painterResource(R.drawable.ic_stop),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("停止", color = MaterialTheme.colorScheme.onSecondaryContainer)
-                    }
-                }
-            }
+        // 迷你播放条(电台状态:连接中/播放中/失败;用辅助色点睛)
+        when (val rs = RadioController.state) {
+            is RadioUiState.Idle -> {}
+            is RadioUiState.Connecting -> MiniPlayerBar(
+                icon = R.drawable.ic_headphones,
+                text = "正在连接:${rs.name}",
+                stopText = "取消"
+            )
+            is RadioUiState.Playing -> MiniPlayerBar(
+                icon = R.drawable.ic_headphones,
+                text = rs.name,
+                stopText = "停止"
+            )
+            is RadioUiState.Failed -> MiniPlayerBar(
+                icon = R.drawable.ic_stop,
+                text = "✗ ${rs.name} 连接失败(${rs.msg})",
+                stopText = "关闭"
+            )
         }
         // 快捷词条:白底描边胶囊气泡(设计语言:白底黑标),按下缩放手感
+
         Row(
             Modifier
                 .fillMaxWidth()
@@ -441,11 +426,11 @@ fun ChatScreen(
         ReminderFormDialog(
             prefill = formDraft,
             onDismiss = { showForm = false },
-            onSave = { text, epochSec, recur ->
+            onSave = { text, epochSec, recur, mode ->
                 showForm = false
                 scope.launch {
                     append(withContext(Dispatchers.IO) {
-                        CoreBridge.saveReminderDirect(context, text, epochSec, recur)
+                        CoreBridge.saveReminderDirect(context, text, epochSec, recur, mode)
                     })
                 }
             }
@@ -665,6 +650,44 @@ private fun NewsCard(items: List<NewsItemRecord>, onDetail: (NewsItemRecord) -> 
                     )
                     Text(it2.title, style = MaterialTheme.typography.bodyMedium)
                 }
+            }
+        }
+    }
+}
+
+/** 电台迷你播放条:按连接状态显示文本(连接中/播放中/失败),右侧停止/取消/关闭 */
+@Composable
+private fun MiniPlayerBar(icon: Int, text: String, stopText: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                painterResource(icon),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { RadioController.stop() }) {
+                Icon(
+                    painterResource(R.drawable.ic_stop),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(stopText, color = MaterialTheme.colorScheme.onSecondaryContainer)
             }
         }
     }

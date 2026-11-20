@@ -60,10 +60,10 @@ object CoreBridge {
         null
     }
 
-    /** 表单保存(死规则直连):返回确认文案并同步系统闹钟 */
-    fun saveReminderDirect(ctx: Context, text: String, epochSec: Long, recur: String): String {
+    /** 表单保存(死规则直连):mode "notify"通知式 / "alarm"闹钟式;返回确认文案并同步系统闹钟 */
+    fun saveReminderDirect(ctx: Context, text: String, epochSec: Long, recur: String, mode: String): String {
         val reply = try {
-            c().saveReminderDirect(text, epochSec, recur)
+            c().saveReminderDirect(text, epochSec, recur, mode)
         } catch (e: Exception) {
             "😅 保存失败:${e.message}"
         }

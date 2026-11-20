@@ -130,7 +130,8 @@ fun ReminderListScreen(ctx: Context, onBack: () -> Unit) {
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    "[${r.id}] ${fmtTime(r.nextRun)} ${recurLabel(r.recur)}",
+                                    "[${r.id}] ${fmtTime(r.nextRun)} ${recurLabel(r.recur)}" +
+                                        if (r.mode == "alarm") " ⏰闹钟" else "",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                                 Text(r.text, style = MaterialTheme.typography.bodyMedium)
@@ -152,10 +153,10 @@ fun ReminderListScreen(ctx: Context, onBack: () -> Unit) {
         ReminderFormDialog(
             prefill = null as ReminderDraft?,
             onDismiss = { showForm = false },
-            onSave = { text, epochSec, recur ->
+            onSave = { text, epochSec, recur, mode ->
                 showForm = false
                 scope.launch {
-                    withContext(Dispatchers.IO) { CoreBridge.saveReminderDirect(ctx, text, epochSec, recur) }
+                    withContext(Dispatchers.IO) { CoreBridge.saveReminderDirect(ctx, text, epochSec, recur, mode) }
                     withContext(Dispatchers.IO) { items = CoreBridge.reminders() }
                 }
             }

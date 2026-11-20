@@ -16,7 +16,7 @@ pub struct Store {
 
 /// 到点处理结果
 pub enum Fired {
-    Text { text: String, next_run: i64 },
+    Text { text: String, next_run: i64, mode: String },
     Digest { next_run: i64 },
     Gone,
 }
@@ -28,6 +28,8 @@ pub struct ReminderRow {
     pub kind: String,
     pub next_run: i64,
     pub recur: Option<String>,
+    /// "notify" 通知式(默认)| "alarm" 闹钟式(系统闹钟铃声+锁屏强提醒)
+    pub mode: String,
 }
 
 impl Store {
@@ -48,6 +50,10 @@ impl Store {
             );
             CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);",
         )?;
+        // 旧库迁移:补 mode 列(alarm/notify;默认通知式)
+        let _ = conn.execute_batch(
+            "ALTER TABLE reminders ADD COLUMN mode TEXT NOT NULL DEFAULT 'notify';",
+        );
         Ok(Store { conn })
     }
 
@@ -74,19 +80,21 @@ impl Store {
         kind: &str,
         next_run: NaiveDateTime,
         recur: Option<&str>,
+        mode: &str,
     ) -> Result<ReminderRow, CoreError2> {
         let id = uuid::Uuid::new_v4().simple().to_string()[..6].to_string();
         let epoch = local_to_epoch(next_run);
         self.conn
             .execute(
-                "INSERT INTO reminders(id,text,kind,next_run,recur,created) VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO reminders(id,text,kind,next_run,recur,created,mode) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 params![
                     id,
                     text,
                     kind,
                     epoch,
                     recur,
-                    local_to_epoch(chrono::Local::now().naive_local())
+                    local_to_epoch(chrono::Local::now().naive_local()),
+                    mode
                 ],
             )
             .map_err(|e| CoreError2(e.to_string()))?;
@@ -96,13 +104,14 @@ impl Store {
             kind: kind.to_string(),
             next_run: epoch,
             recur: recur.map(|s| s.to_string()),
+            mode: mode.to_string(),
         })
     }
 
     pub fn list_reminders(&self) -> Vec<ReminderRow> {
         let mut stmt = match self
             .conn
-            .prepare("SELECT id,text,kind,next_run,recur FROM reminders ORDER BY next_run")
+            .prepare("SELECT id,text,kind,next_run,recur,mode FROM reminders ORDER BY next_run")
         {
             Ok(s) => s,
             Err(_) => return vec![],
@@ -114,6 +123,7 @@ impl Store {
                 kind: r.get(2)?,
                 next_run: r.get(3)?,
                 recur: r.get(4)?,
+                mode: r.get::<_, String>(5).unwrap_or_else(|_| "notify".to_string()),
             })
         };
         let rows = match stmt.query_map([], map) {
@@ -144,7 +154,7 @@ impl Store {
         let row = self
             .conn
             .query_row(
-                "SELECT id,text,kind,next_run,recur FROM reminders WHERE id=?1",
+                "SELECT id,text,kind,next_run,recur,mode FROM reminders WHERE id=?1",
                 params![id],
                 |r| {
                     Ok(ReminderRow {
@@ -153,6 +163,7 @@ impl Store {
                         kind: r.get(2)?,
                         next_run: r.get(3)?,
                         recur: r.get(4)?,
+                        mode: r.get::<_, String>(5).unwrap_or_else(|_| "notify".to_string()),
                     })
                 },
             )
@@ -183,7 +194,7 @@ impl Store {
         if row.kind == "digest" {
             Ok(Fired::Digest { next_run })
         } else {
-            Ok(Fired::Text { text: row.text, next_run })
+            Ok(Fired::Text { text: row.text, next_run, mode: row.mode })
         }
     }
 }

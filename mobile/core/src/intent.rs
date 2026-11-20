@@ -340,7 +340,7 @@ fn add_reminder(core: &Assistant, body: &str) -> String {
         Ok(s) => s,
         Err(_) => return "😅 存储忙,稍后再试".to_string(),
     };
-    match store.add_reminder(text, "text", parsed.when, parsed.recur.as_deref()) {
+    match store.add_reminder(text, "text", parsed.when, parsed.recur.as_deref(), "notify") {
         Ok(rec) => format!(
             "✅ 提醒已设置 [{}]\n⏰ {} {}\n📝 {}\n到点我来喊你;取消发送「取消提醒 {}」",
             rec.id,
@@ -371,7 +371,7 @@ fn subscribe_digest(core: &Assistant, raw: Option<&str>) -> String {
         Err(_) => return "😅 存储忙,稍后再试".to_string(),
     };
     store.remove_digests();
-    match store.add_reminder("早报", "digest", dt, Some("daily")) {
+    match store.add_reminder("早报", "digest", dt, Some("daily"), "notify") {
         Ok(rec) => format!(
             "🔔 早报订阅成功,每天 {:02}:{:02} 推送(天气+要闻+今日诗词)\n[编号 {},取消发送「取消订阅」]",
             h, mi, rec.id
@@ -457,7 +457,7 @@ fn apply_daily_template(core: &Assistant, label: &str, key: &str, default_times:
                 dt += chrono::Duration::days(1);
             }
             dt
-        }, Some("daily")) {
+        }, Some("daily"), "notify") {
             added.push(format!(
                 "{} [{}]",
                 human_dt(&crate::timeparse::epoch_to_local(rec.next_run)),

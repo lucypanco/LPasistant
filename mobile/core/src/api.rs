@@ -51,13 +51,15 @@ pub struct ReminderRecord {
     pub next_run: i64,
     /// "" 单次 | "daily" | "weekly:<0-6>"(0=周一)
     pub recur: String,
+    /// "notify" 通知式 | "alarm" 闹钟式(系统闹钟铃声+锁屏强提醒)
+    pub mode: String,
 }
 
 /// 提醒到点的处理结果
 #[derive(Debug, uniffi::Enum)]
 pub enum FireOutcome {
     /// 普通提醒:text 为要通知的内容;next_run>0 表示循环提醒已顺延,需要重新调度闹钟
-    Text { text: String, next_run: i64 },
+    Text { text: String, next_run: i64, mode: String },
     /// 早报订阅到点:调用 compose_digest() 组装内容;next_run 同上
     Digest { next_run: i64 },
     /// 提醒不存在(已取消/已触发过)
@@ -194,6 +196,7 @@ impl Assistant {
                 kind: r.kind,
                 next_run: r.next_run,
                 recur: r.recur.unwrap_or_default(),
+                mode: r.mode,
             })
             .collect())
     }
@@ -202,8 +205,8 @@ impl Assistant {
     pub fn reminder_fired(&self, id: String) -> Result<FireOutcome, CoreError> {
         let mut store = self.store.lock().map_err(|_| err("存储忙"))?;
         match store.fire(&id, chrono::Local::now().naive_local())? {
-            crate::store::Fired::Text { text, next_run } => {
-                Ok(FireOutcome::Text { text, next_run })
+            crate::store::Fired::Text { text, next_run, mode } => {
+                Ok(FireOutcome::Text { text, next_run, mode })
             }
             crate::store::Fired::Digest { next_run } => Ok(FireOutcome::Digest { next_run }),
             crate::store::Fired::Gone => Ok(FireOutcome::Gone),
@@ -426,12 +429,14 @@ impl Assistant {
         })
     }
 
-    /// 表单保存:字段即最终值,不做任何解析;同时清除待确认草稿
+    /// 表单保存:字段即最终值,不做任何解析;同时清除待确认草稿。
+    /// mode: "notify" 通知式 | "alarm" 闹钟式(其他值按 notify 处理)
     pub fn save_reminder_direct(
         &self,
         text: String,
         next_run: i64,
         recur: String,
+        mode: String,
     ) -> Result<String, CoreError> {
         if let Ok(mut g) = self.pending.lock() {
             *g = None;
@@ -439,12 +444,15 @@ impl Assistant {
         let when = crate::timeparse::epoch_to_local(next_run);
         let mut store = self.store.lock().map_err(|_| err("存储忙"))?;
         let recur_opt = if recur.is_empty() { None } else { Some(recur.as_str()) };
+        let mode = if mode == "alarm" { "alarm" } else { "notify" };
         let rec = store
-            .add_reminder(&text, "text", when, recur_opt)
+            .add_reminder(&text, "text", when, recur_opt, mode)
             .map_err(|e| err(format!("保存失败:{}", e.0)))?;
+        let mode_tag = if mode == "alarm" { "⏰闹钟" } else { "🔔通知" };
         Ok(format!(
-            "✅ 提醒已设置 [{}]\n⏰ {} {}\n📝 {}\n取消发送「取消提醒 {}」",
+            "✅ 提醒已设置 [{}]{}\n⏰ {} {}\n📝 {}\n取消发送「取消提醒 {}」",
             rec.id,
+            mode_tag,
             crate::timeparse::human_dt(&when),
             crate::intent::recur_label(recur_opt),
             text,
@@ -460,7 +468,7 @@ impl Assistant {
             return Ok("没有待确认的提醒".to_string());
         };
         let mut store = self.store.lock().map_err(|_| err("存储忙"))?;
-        match store.add_reminder(&d.text, "text", d.when, d.recur.as_deref()) {
+        match store.add_reminder(&d.text, "text", d.when, d.recur.as_deref(), "notify") {
             Ok(rec) => Ok(format!(
                 "✅ 提醒已设置 [{}]\n⏰ {} {}\n📝 {}\n到点我来喊你;取消发送「取消提醒 {}」",
                 rec.id,
